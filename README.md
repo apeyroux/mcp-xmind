@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/apeyroux-mcp-xmind-badge.png)](https://mseep.ai/app/apeyroux-mcp-xmind)
+
 # MCP XMind Server
 [![smithery badge](https://smithery.ai/badge/@41px/mcp-xmind)](https://smithery.ai/server/@41px/mcp-xmind)
 
