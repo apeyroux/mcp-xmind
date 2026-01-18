@@ -1,0 +1,24 @@
+# Smithery configuration file: https://smithery.ai/docs/build/project-config/smithery.yaml
+
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    required:
+      - allowedDirectories
+    properties:
+      allowedDirectories:
+        type: array
+        items:
+          type: string
+        description: List of directories the server is allowed to access for XMind files
+        minItems: 1
+  commandFunction: |-
+    (config) => ({
+      command: 'node',
+      args: ['dist/index.js', ...config.allowedDirectories]
+    })
+  exampleConfig:
+    allowedDirectories:
+      - "/Users/username/XMind"
+      - "/Users/username/Documents/MindMaps"
