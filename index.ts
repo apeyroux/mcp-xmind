@@ -1,16 +1,10 @@
 #!/usr/bin/env node
 
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import {
-    CallToolRequestSchema,
-    ListToolsRequestSchema,
-    ToolSchema,
-} from "@modelcontextprotocol/sdk/types.js";
 import fs from "fs/promises";
 import path from "path";
 import { z } from "zod";
-import { zodToJsonSchema } from "zod-to-json-schema";
 import AdmZip from 'adm-zip';
 
 // Command line argument parsing
@@ -39,7 +33,7 @@ await Promise.all(args.map(async (dir) => {
     }
 }));
 
-// Ajouter après la définition des allowedDirectories
+// Path validation helper
 function isPathAllowed(filePath: string): boolean {
     const normalizedPath = path.normalize(path.resolve(filePath)).toLowerCase();
     return allowedDirectories.some(dir => normalizedPath.startsWith(dir));
@@ -125,24 +119,24 @@ class XMindParser {
         }
     }
 
-    private parseContentJson(jsonContent: string): Promise<XMindNode[]> {
+    private parseContentJson(jsonContent: string): XMindNode[] {
         try {
             const content = JSON.parse(jsonContent);
-            const allNodes = content.map((sheet: { 
-                rootTopic: XMindTopic; 
+            const allNodes = content.map((sheet: {
+                rootTopic: XMindTopic;
                 title?: string;
                 relationships?: XMindRelationship[];
             }) => {
                 const rootNode = this.processNode(sheet.rootTopic, sheet.title || "Untitled Map");
-                // Ajouter les relations au nœud racine
+                // Add relationships to root node
                 if (sheet.relationships) {
                     rootNode.relationships = sheet.relationships;
                 }
                 return rootNode;
             });
-            return Promise.resolve(allNodes);
+            return allNodes;
         } catch (error) {
-            return Promise.reject(`Failed to parse JSON content: ${error}`);
+            throw new Error(`Failed to parse JSON content: ${error}`);
         }
     }
 
@@ -162,14 +156,11 @@ class XMindParser {
             }));
         }
 
-        // Handle notes and callouts
+        // Handle notes - fixed duplicate condition
         if (node.notes?.plain?.content) {
-            processedNode.notes = {};
-
-            // Process main note content
-            if (node.notes?.plain?.content) {
-                processedNode.notes.content = node.notes.plain.content;
-            }
+            processedNode.notes = {
+                content: node.notes.plain.content
+            };
         }
 
         // Handle task status
@@ -197,49 +188,129 @@ function getNodePath(node: XMindNode, parents: string[] = []): string {
     return parents.length > 0 ? `${parents.join(' > ')} > ${node.title}` : node.title;
 }
 
-// Schema definitions
+// Schema definitions for tool inputs
 const ReadXMindArgsSchema = z.object({
-    path: z.string(),
+    path: z.string().describe("Path to the .xmind file"),
 });
 
 const ListXMindDirectoryArgsSchema = z.object({
-    directory: z.string().optional(),
+    directory: z.string().optional().describe("Directory to scan (defaults to all allowed directories)"),
 });
 
 const ReadMultipleXMindArgsSchema = z.object({
-    paths: z.array(z.string()),
+    paths: z.array(z.string()).describe("Array of paths to .xmind files"),
 });
 
 const SearchXMindFilesSchema = z.object({
-    pattern: z.string(),
-    directory: z.string().optional(),
+    pattern: z.string().describe("Search pattern to match in file names or content"),
+    directory: z.string().optional().describe("Starting directory for search"),
 });
 
-// Modifier le schéma pour refléter la nouvelle approche
 const ExtractNodeArgsSchema = z.object({
-    path: z.string(),
-    searchQuery: z.string(), // Renommé de nodePath à searchQuery
+    path: z.string().describe("Path to the .xmind file"),
+    searchQuery: z.string().describe("Text to search in node paths (flexible matching)"),
 });
 
 const ExtractNodeByIdArgsSchema = z.object({
-    path: z.string(),
-    nodeId: z.string(),
+    path: z.string().describe("Path to the .xmind file"),
+    nodeId: z.string().describe("Unique identifier of the node"),
 });
 
 const SearchNodesArgsSchema = z.object({
-    path: z.string(),
-    query: z.string(),
-    searchIn: z.array(z.enum(['title', 'notes', 'labels', 'callouts', 'tasks'])).optional(),
-    caseSensitive: z.boolean().optional(),
-    taskStatus: z.enum(['todo', 'done']).optional(), // Ajout du filtre de statut de tâche
+    path: z.string().describe("Path to the .xmind file"),
+    query: z.string().describe("Search text"),
+    searchIn: z.array(z.enum(['title', 'notes', 'labels', 'callouts', 'tasks'])).optional()
+        .describe("Fields to search in"),
+    caseSensitive: z.boolean().optional().describe("Whether search is case-sensitive"),
+    taskStatus: z.enum(['todo', 'done']).optional().describe("Filter by task status"),
 });
 
+// Output Schema definitions
+const XMindNodeSchema: z.ZodType<XMindNode> = z.lazy(() => z.object({
+    title: z.string(),
+    id: z.string().optional(),
+    children: z.array(XMindNodeSchema).optional(),
+    taskStatus: z.enum(['done', 'todo']).optional(),
+    notes: z.object({
+        content: z.string().optional(),
+    }).optional(),
+    href: z.string().optional(),
+    labels: z.array(z.string()).optional(),
+    sheetTitle: z.string().optional(),
+    callouts: z.array(z.object({
+        title: z.string(),
+    })).optional(),
+    relationships: z.array(z.object({
+        id: z.string(),
+        end1Id: z.string(),
+        end2Id: z.string(),
+        title: z.string().optional(),
+    })).optional(),
+}));
+
+const NodeMatchSchema = z.object({
+    id: z.string(),
+    title: z.string(),
+    path: z.string(),
+    sheet: z.string(),
+    matchedIn: z.array(z.string()),
+    notes: z.string().optional(),
+    labels: z.array(z.string()).optional(),
+    callouts: z.array(z.object({ title: z.string() })).optional(),
+    taskStatus: z.enum(['todo', 'done']).optional(),
+});
+
+const FuzzyMatchResultSchema = z.object({
+    node: XMindNodeSchema,
+    matchConfidence: z.number(),
+    path: z.string(),
+});
+
+// Result interfaces
 interface MultipleXMindResult {
     filePath: string;
     content: XMindNode[];
     error?: string;
 }
 
+interface NodeMatch {
+    id: string;
+    title: string;
+    path: string;
+    sheet: string;
+    matchedIn: string[];
+    notes?: string;
+    labels?: string[];
+    callouts?: {
+        title: string;
+    }[];
+    taskStatus?: 'todo' | 'done';
+}
+
+interface SearchResult {
+    query: string;
+    matches: NodeMatch[];
+    totalMatches: number;
+    searchedIn: string[];
+}
+
+interface NodeSearchResult {
+    found: boolean;
+    node?: XMindNode;
+    error?: string;
+}
+
+interface PathSearchResult {
+    found: boolean;
+    nodes: Array<{
+        node: XMindNode;
+        matchConfidence: number;
+        path: string;
+    }>;
+    error?: string;
+}
+
+// Helper functions
 async function readMultipleXMindFiles(paths: string[]): Promise<MultipleXMindResult[]> {
     const results: MultipleXMindResult[] = [];
 
@@ -268,7 +339,6 @@ async function readMultipleXMindFiles(paths: string[]): Promise<MultipleXMindRes
     return results;
 }
 
-// Function to list XMind files
 async function listXMindFiles(directory?: string): Promise<string[]> {
     const files: string[] = [];
     const dirsToScan = directory
@@ -276,13 +346,12 @@ async function listXMindFiles(directory?: string): Promise<string[]> {
         : allowedDirectories;
 
     for (const dir of dirsToScan) {
-        // Check if directory is allowed
         const normalizedDir = dir.toLowerCase();
         if (!allowedDirectories.some(allowed => normalizedDir.startsWith(allowed))) {
-            continue; // Skip unauthorized directories
+            continue;
         }
 
-        async function scanDirectory(currentDir: string) {
+        async function scanDirectory(currentDir: string): Promise<void> {
             try {
                 const entries = await fs.readdir(currentDir, { withFileTypes: true });
                 for (const entry of entries) {
@@ -295,7 +364,6 @@ async function listXMindFiles(directory?: string): Promise<string[]> {
                 }
             } catch (error) {
                 console.error(`Warning: Error scanning directory ${currentDir}:`, error);
-                // Continue scanning other directories even if one fails
             }
         }
 
@@ -305,7 +373,6 @@ async function listXMindFiles(directory?: string): Promise<string[]> {
     return files;
 }
 
-// Add before server setup
 async function searchInXMindContent(filePath: string, searchText: string): Promise<boolean> {
     try {
         const zip = new AdmZip(filePath);
@@ -320,13 +387,12 @@ async function searchInXMindContent(filePath: string, searchText: string): Promi
     }
 }
 
-// Modification de la fonction searchXMindFiles
 async function searchXMindFiles(pattern: string): Promise<string[]> {
     const matches: string[] = [];
     const contentMatches: string[] = [];
     const searchPattern = pattern.toLowerCase();
 
-    async function searchInDirectory(currentDir: string) {
+    async function searchInDirectory(currentDir: string): Promise<void> {
         try {
             const entries = await fs.readdir(currentDir, { withFileTypes: true });
             for (const entry of entries) {
@@ -344,11 +410,10 @@ async function searchXMindFiles(pattern: string): Promise<string[]> {
                         fullPath.toLowerCase()
                     ];
 
-                    if (searchPattern === '' || 
+                    if (searchPattern === '' ||
                         searchableText.some(text => text.includes(searchPattern))) {
                         matches.push(fullPath);
                     } else {
-                        // Si le pattern n'est pas trouvé dans le nom, chercher dans le contenu
                         if (await searchInXMindContent(fullPath, searchPattern)) {
                             contentMatches.push(fullPath);
                         }
@@ -362,19 +427,12 @@ async function searchXMindFiles(pattern: string): Promise<string[]> {
 
     await Promise.all(allowedDirectories.map(dir => searchInDirectory(dir)));
 
-    // Combiner et trier les résultats
     const allMatches = [
         ...matches.sort((a, b) => path.basename(a).localeCompare(path.basename(b))),
         ...contentMatches.sort((a, b) => path.basename(a).localeCompare(path.basename(b)))
     ];
 
     return allMatches;
-}
-
-interface NodeSearchResult {
-    found: boolean;
-    node?: XMindNode;
-    error?: string;
 }
 
 function findNodeByPath(node: XMindNode, searchPath: string[]): NodeSearchResult {
@@ -405,28 +463,6 @@ function findNodeByPath(node: XMindNode, searchPath: string[]): NodeSearchResult
     return findNodeByPath(matchingChild, searchPath.slice(1));
 }
 
-interface NodeMatch {
-    id: string;
-    title: string;
-    path: string;
-    sheet: string;
-    matchedIn: string[];
-    notes?: string;
-    labels?: string[];
-    callouts?: {
-        title: string;
-    }[];
-    taskStatus?: 'todo' | 'done';
-}
-
-interface SearchResult {
-    query: string;
-    matches: NodeMatch[];
-    totalMatches: number;
-    searchedIn: string[];
-}
-
-// Ajouter la fonction de recherche de nœuds
 function searchNodes(
     node: XMindNode,
     query: string,
@@ -443,22 +479,20 @@ function searchNodes(
 
     const matchedIn: string[] = [];
 
-    // Fonction helper pour la recherche de texte sécurisée
     const matchesText = (text: string | undefined): boolean => {
         if (!text) return false;
         const searchIn = options.caseSensitive ? text : text.toLowerCase();
         return searchIn.includes(searchQuery);
     };
 
-    // Vérification du statut de tâche si spécifié
+    // Check task status filter
     if (options.taskStatus && node.taskStatus) {
         if (node.taskStatus !== options.taskStatus) {
-            // Si le statut ne correspond pas, ignorer ce nœud
             return [];
         }
     }
 
-    // Vérifier chaque champ configuré
+    // Check each configured field
     if (searchFields.includes('title') && matchesText(node.title)) {
         matchedIn.push('title');
     }
@@ -475,8 +509,7 @@ function searchNodes(
         matchedIn.push('tasks');
     }
 
-    // Si on a trouvé des correspondances ou si c'est une tâche correspondante, ajouter ce nœud
-    const shouldIncludeNode = matchedIn.length > 0 || 
+    const shouldIncludeNode = matchedIn.length > 0 ||
         (options.taskStatus && node.taskStatus === options.taskStatus);
 
     if (shouldIncludeNode && node.id) {
@@ -489,11 +522,11 @@ function searchNodes(
             notes: node.notes?.content,
             labels: node.labels,
             callouts: node.callouts,
-            taskStatus: node.taskStatus // Ajout du statut de tâche dans les résultats
+            taskStatus: node.taskStatus
         });
     }
 
-    // Rechercher récursivement dans les enfants
+    // Search recursively in children
     if (node.children) {
         const currentPath = [...parents, node.title];
         node.children.forEach(child => {
@@ -504,7 +537,6 @@ function searchNodes(
     return matches;
 }
 
-// Modifier la fonction de récupération d'un nœud pour utiliser l'ID
 function findNodeById(node: XMindNode, searchId: string): NodeSearchResult {
     if (node.id === searchId) {
         return { found: true, node };
@@ -524,18 +556,6 @@ function findNodeById(node: XMindNode, searchId: string): NodeSearchResult {
     return { found: false };
 }
 
-// Nouvelle interface pour les résultats de recherche de chemin
-interface PathSearchResult {
-    found: boolean;
-    nodes: Array<{
-        node: XMindNode;
-        matchConfidence: number;
-        path: string;
-    }>;
-    error?: string;
-}
-
-// Nouvelle fonction de recherche de nœuds par chemin approximatif
 function findNodesbyFuzzyPath(
     node: XMindNode,
     searchQuery: string,
@@ -545,17 +565,14 @@ function findNodesbyFuzzyPath(
     const results: PathSearchResult['nodes'] = [];
     const currentPath = getNodePath(node, parents);
 
-    // Fonction helper pour calculer la pertinence
     function calculateRelevance(nodePath: string, query: string): number {
         const pathLower = nodePath.toLowerCase();
         const queryLower = query.toLowerCase();
 
-        // Score plus élevé pour une correspondance exacte
         if (pathLower.includes(queryLower)) {
             return 1.0;
         }
 
-        // Score basé sur les mots correspondants
         const pathWords = pathLower.split(/[\s>]+/);
         const queryWords = queryLower.split(/[\s>]+/);
 
@@ -566,7 +583,6 @@ function findNodesbyFuzzyPath(
         return matchingWords.length / queryWords.length;
     }
 
-    // Vérifier le nœud courant
     const confidence = calculateRelevance(currentPath, searchQuery);
     if (confidence > threshold) {
         results.push({
@@ -576,7 +592,6 @@ function findNodesbyFuzzyPath(
         });
     }
 
-    // Rechercher récursivement dans les enfants
     if (node.children) {
         const newParents = [...parents, node.title];
         node.children.forEach(child => {
@@ -587,305 +602,320 @@ function findNodesbyFuzzyPath(
     return results;
 }
 
-// Server setup
-const server = new Server(
+// Server setup using new McpServer API
+const server = new McpServer({
+    name: "xmind-analysis-server",
+    version: "2.0.0",
+});
+
+// Tool: read_xmind
+server.tool(
+    "read_xmind",
+    `Parse and analyze XMind files with multiple capabilities:
+- Extract complete mind map structure in JSON format
+- Include all relationships between nodes with their IDs and titles
+- Extract callouts attached to topics
+- Generate text or markdown summaries
+- Search for specific content
+- Get hierarchical path to any node
+- Filter content by labels, task status, or node depth
+- Extract all URLs and external references
+- Analyze relationships and connections between topics`,
     {
-        name: "xmind-analysis-server",
-        version: "1.0.0",
+        path: z.string().describe("Path to the .xmind file"),
     },
-    {
-        capabilities: {
-            tools: {},
-        },
+    async ({ path: filePath }) => {
+        if (!isPathAllowed(filePath)) {
+            return {
+                content: [{ type: "text", text: `Error: Access denied - ${filePath} is not in an allowed directory` }],
+                isError: true,
+            };
+        }
+        try {
+            const parser = new XMindParser(filePath);
+            const mindmap = await parser.parse();
+            return {
+                content: [{ type: "text", text: JSON.stringify(mindmap, null, 2) }],
+            };
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            return {
+                content: [{ type: "text", text: `Error: ${errorMessage}` }],
+                isError: true,
+            };
+        }
     }
 );
 
-// Tool handlers
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-    return {
-        tools: [
-            {
-                name: "read_xmind",
-                description: `Parse and analyze XMind files with multiple capabilities:
-                - Extract complete mind map structure in JSON format
-                - Include all relationships between nodes with their IDs and titles
-                - Extract callouts attached to topics
-                - Generate text or markdown summaries
-                - Search for specific content
-                - Get hierarchical path to any node
-                - Filter content by labels, task status, or node depth
-                - Extract all URLs and external references
-                - Analyze relationships and connections between topics
-                Input: File path to .xmind file
-                Output: JSON structure containing nodes, relationships, and callouts`,
-                inputSchema: zodToJsonSchema(ReadXMindArgsSchema),
-            },
-            {
-                name: "list_xmind_directory",
-                description: `Comprehensive XMind file discovery and analysis tool:
-                - Recursively scan directories for .xmind files
-                - Filter files by creation/modification date
-                - Search for files containing specific content
-                - Group files by project or category
-                - Detect duplicate mind maps
-                - Generate directory statistics and summaries
-                - Verify file integrity and structure
-                - Monitor changes in mind map files
-                Input: Directory path to scan
-                Output: List of XMind files with optional metadata`,
-                inputSchema: zodToJsonSchema(ListXMindDirectoryArgsSchema),
-            },
-            {
-                name: "read_multiple_xmind_files",
-                description: `Advanced multi-file analysis and correlation tool:
-                - Process multiple XMind files simultaneously
-                - Compare content across different mind maps
-                - Identify common themes and patterns
-                - Merge related content from different files
-                - Generate cross-reference reports
-                - Find content duplications across files
-                - Create consolidated summaries
-                - Track changes across multiple versions
-                - Generate comparative analysis
-                Input: Array of file paths to .xmind files
-                Output: Combined analysis results in JSON format with per-file details`,
-                inputSchema: zodToJsonSchema(ReadMultipleXMindArgsSchema),
-            },
-            {
-                name: "search_xmind_files",
-                description: `Advanced file search tool with recursive capabilities:
-                - Search for files and directories by partial name matching
-                - Case-insensitive pattern matching
-                - Searches through all subdirectories recursively
-                - Returns full paths to all matching items
-                - Includes both files and directories in results
-                - Safe searching within allowed directories only
-                - Handles special characters in names
-                - Continues searching even if some directories are inaccessible
-                Input: {
-                    directory: Starting directory path,
-                    pattern: Search text to match in names
-                }
-                Output: Array of full paths to matching items`,
-                inputSchema: zodToJsonSchema(SearchXMindFilesSchema),
-            },
-            {
-                name: "extract_node",
-                description: `Smart node extraction with fuzzy path matching:
-                - Flexible search using partial or complete node paths
-                - Returns multiple matching nodes ranked by relevance
-                - Supports approximate matching for better results
-                - Includes full context and hierarchy information
-                - Returns complete subtree for each match
-                - Best tool for exploring and navigating complex mind maps
-                - Perfect for finding nodes when exact path is unknown
-                Usage examples:
-                - "Project > Backend" : finds nodes in any path containing these terms
-                - "Feature API" : finds nodes containing these words in any order
-                Input: {
-                    path: Path to .xmind file,
-                    searchQuery: Text to search in node paths (flexible matching)
-                }
-                Output: Ranked list of matching nodes with their full subtrees`,
-                inputSchema: zodToJsonSchema(ExtractNodeArgsSchema),
-            },
-            {
-                name: "extract_node_by_id",
-                description: `Extract a specific node and its subtree using its unique ID:
-                - Find and extract node using its XMind ID
-                - Return complete subtree structure
-                - Preserve all node properties and relationships
-                - Fast direct access without path traversal
-                Note: For a more detailed view with fuzzy matching, use "extract_node" with the node's path
-                Input: {
-                    path: Path to .xmind file,
-                    nodeId: Unique identifier of the node
-                }
-                Output: JSON structure of the found node and its subtree`,
-                inputSchema: zodToJsonSchema(ExtractNodeByIdArgsSchema),
-            },
-            {
-                name: "search_nodes",
-                description: `Advanced node search with multiple criteria:
-                - Search through titles, notes, labels, callouts and tasks
-                - Filter by task status (todo/done)
-                - Find nodes by their relationships
-                - Configure which fields to search in
-                - Case-sensitive or insensitive search
-                - Get full context including task status
-                - Returns all matching nodes with their IDs
-                - Includes relationship information and task status
-                Input: {
-                    path: Path to .xmind file,
-                    query: Search text,
-                    searchIn: Array of fields to search in ['title', 'notes', 'labels', 'callouts', 'tasks'],
-                    taskStatus: 'todo' | 'done' (optional),
-                    caseSensitive: Boolean (optional)
-                }
-                Output: Detailed search results with task status and context`,
-                inputSchema: zodToJsonSchema(SearchNodesArgsSchema),
-            },
-        ],
-    };
-});
-
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    try {
-        const { name, arguments: args } = request.params;
-
-        switch (name) {
-            case "read_xmind": {
-                const parsed = ReadXMindArgsSchema.safeParse(args);
-                if (!parsed.success) {
-                    throw new Error(`Invalid arguments for read_xmind: ${parsed.error}`);
-                }
-                if (!isPathAllowed(parsed.data.path)) {
-                    throw new Error(`Access denied: ${parsed.data.path} is not in an allowed directory`);
-                }
-                const parser = new XMindParser(parsed.data.path);
-                const mindmap = await parser.parse();
-                return {
-                    content: [{ type: "text", text: JSON.stringify(mindmap, null, 2) }],
-                };
-            }
-
-            case "list_xmind_directory": {
-                const parsed = ListXMindDirectoryArgsSchema.safeParse(args);
-                if (!parsed.success) {
-                    throw new Error(`Invalid arguments for list_xmind_directory: ${parsed.error}`);
-                }
-                const files = await listXMindFiles(parsed.data.directory);
-                return {
-                    content: [{ type: "text", text: files.join('\n') }],
-                };
-            }
-
-            case "read_multiple_xmind_files": {
-                const parsed = ReadMultipleXMindArgsSchema.safeParse(args);
-                if (!parsed.success) {
-                    throw new Error(`Invalid arguments for read_multiple_xmind_files: ${parsed.error}`);
-                }
-                const results = await readMultipleXMindFiles(parsed.data.paths);
-                return {
-                    content: [{ type: "text", text: JSON.stringify(results, null, 2) }],
-                };
-            }
-
-            case "search_xmind_files": {
-                const parsed = SearchXMindFilesSchema.safeParse(args);
-                if (!parsed.success) {
-                    throw new Error(`Invalid arguments for search_xmind_files: ${parsed.error}`);
-                }
-                // Corriger l'appel pour n'utiliser que le pattern
-                const matches = await searchXMindFiles(parsed.data.pattern);
-                return {
-                    content: [{ type: "text", text: matches.join('\n') }],
-                };
-            }
-
-            case "extract_node": {
-                const parsed = ExtractNodeArgsSchema.safeParse(args);
-                if (!parsed.success) {
-                    throw new Error(`Invalid arguments for extract_node: ${parsed.error}`);
-                }
-
-                const parser = new XMindParser(parsed.data.path);
-                const mindmap = await parser.parse();
-
-                const allMatches = mindmap.flatMap(sheet =>
-                    findNodesbyFuzzyPath(sheet, parsed.data.searchQuery)
-                );
-
-                // Trier par pertinence
-                allMatches.sort((a, b) => b.matchConfidence - a.matchConfidence);
-
-                if (allMatches.length === 0) {
-                    throw new Error(`No nodes found matching: ${parsed.data.searchQuery}`);
-                }
-
-                // Retourner le résultat avec les meilleurs matchs
-                return {
-                    content: [{
-                        type: "text",
-                        text: JSON.stringify({
-                            matches: allMatches.slice(0, 5), // Limiter aux 5 meilleurs résultats
-                            totalMatches: allMatches.length,
-                            query: parsed.data.searchQuery
-                        }, null, 2)
-                    }],
-                };
-            }
-
-            case "extract_node_by_id": {
-                const parsed = ExtractNodeByIdArgsSchema.safeParse(args);
-                if (!parsed.success) {
-                    throw new Error(`Invalid arguments for extract_node_by_id: ${parsed.error}`);
-                }
-
-                const parser = new XMindParser(parsed.data.path);
-                const mindmap = await parser.parse();
-
-                for (const sheet of mindmap) {
-                    const result = findNodeById(sheet, parsed.data.nodeId);
-                    if (result.found && result.node) {
-                        return {
-                            content: [{
-                                type: "text",
-                                text: JSON.stringify(result.node, null, 2)
-                            }],
-                        };
-                    }
-                }
-
-                throw new Error(`Node not found with ID: ${parsed.data.nodeId}`);
-            }
-
-            case "search_nodes": {
-                const parsed = SearchNodesArgsSchema.safeParse(args);
-                if (!parsed.success) {
-                    throw new Error(`Invalid arguments for search_nodes: ${parsed.error}`);
-                }
-
-                const parser = new XMindParser(parsed.data.path);
-                const mindmap = await parser.parse();
-
-                const matches: NodeMatch[] = mindmap.flatMap(sheet =>
-                    searchNodes(sheet, parsed.data.query, {
-                        searchIn: parsed.data.searchIn,
-                        caseSensitive: parsed.data.caseSensitive,
-                        taskStatus: parsed.data.taskStatus
-                    })
-                );
-
-                const result: SearchResult = {
-                    query: parsed.data.query,
-                    matches,
-                    totalMatches: matches.length,
-                    searchedIn: parsed.data.searchIn || ['title', 'notes', 'labels', 'callouts', 'tasks']
-                };
-
-                return {
-                    content: [{
-                        type: "text",
-                        text: JSON.stringify(result, null, 2)
-                    }],
-                };
-            }
-
-            default:
-                throw new Error(`Unknown tool: ${name}`);
+// Tool: list_xmind_directory
+server.tool(
+    "list_xmind_directory",
+    `Comprehensive XMind file discovery and analysis tool:
+- Recursively scan directories for .xmind files
+- Filter files by creation/modification date
+- Search for files containing specific content
+- Group files by project or category
+- Detect duplicate mind maps
+- Generate directory statistics and summaries
+- Verify file integrity and structure
+- Monitor changes in mind map files`,
+    {
+        directory: z.string().optional().describe("Directory to scan (defaults to all allowed directories)"),
+    },
+    async ({ directory }) => {
+        try {
+            const files = await listXMindFiles(directory);
+            return {
+                content: [{ type: "text", text: files.length > 0 ? files.join('\n') : "No XMind files found" }],
+            };
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            return {
+                content: [{ type: "text", text: `Error: ${errorMessage}` }],
+                isError: true,
+            };
         }
-    } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        return {
-            content: [{ type: "text", text: `Error: ${errorMessage}` }],
-            isError: true,
-        };
     }
-});
+);
+
+// Tool: read_multiple_xmind_files
+server.tool(
+    "read_multiple_xmind_files",
+    `Advanced multi-file analysis and correlation tool:
+- Process multiple XMind files simultaneously
+- Compare content across different mind maps
+- Identify common themes and patterns
+- Merge related content from different files
+- Generate cross-reference reports
+- Find content duplications across files
+- Create consolidated summaries
+- Track changes across multiple versions
+- Generate comparative analysis`,
+    {
+        paths: z.array(z.string()).describe("Array of paths to .xmind files"),
+    },
+    async ({ paths }) => {
+        try {
+            const results = await readMultipleXMindFiles(paths);
+            return {
+                content: [{ type: "text", text: JSON.stringify(results, null, 2) }],
+            };
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            return {
+                content: [{ type: "text", text: `Error: ${errorMessage}` }],
+                isError: true,
+            };
+        }
+    }
+);
+
+// Tool: search_xmind_files
+server.tool(
+    "search_xmind_files",
+    `Advanced file search tool with recursive capabilities:
+- Search for files and directories by partial name matching
+- Case-insensitive pattern matching
+- Searches through all subdirectories recursively
+- Returns full paths to all matching items
+- Includes both files and directories in results
+- Safe searching within allowed directories only
+- Handles special characters in names
+- Continues searching even if some directories are inaccessible`,
+    {
+        pattern: z.string().describe("Search pattern to match in file names or content"),
+        directory: z.string().optional().describe("Starting directory for search"),
+    },
+    async ({ pattern }) => {
+        try {
+            const matches = await searchXMindFiles(pattern);
+            return {
+                content: [{ type: "text", text: matches.length > 0 ? matches.join('\n') : "No matching files found" }],
+            };
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            return {
+                content: [{ type: "text", text: `Error: ${errorMessage}` }],
+                isError: true,
+            };
+        }
+    }
+);
+
+// Tool: extract_node
+server.tool(
+    "extract_node",
+    `Smart node extraction with fuzzy path matching:
+- Flexible search using partial or complete node paths
+- Returns multiple matching nodes ranked by relevance
+- Supports approximate matching for better results
+- Includes full context and hierarchy information
+- Returns complete subtree for each match
+- Best tool for exploring and navigating complex mind maps
+- Perfect for finding nodes when exact path is unknown
+Usage examples:
+- "Project > Backend" : finds nodes in any path containing these terms
+- "Feature API" : finds nodes containing these words in any order`,
+    {
+        path: z.string().describe("Path to the .xmind file"),
+        searchQuery: z.string().describe("Text to search in node paths (flexible matching)"),
+    },
+    async ({ path: filePath, searchQuery }) => {
+        if (!isPathAllowed(filePath)) {
+            return {
+                content: [{ type: "text", text: `Error: Access denied - ${filePath} is not in an allowed directory` }],
+                isError: true,
+            };
+        }
+        try {
+            const parser = new XMindParser(filePath);
+            const mindmap = await parser.parse();
+
+            const allMatches = mindmap.flatMap(sheet =>
+                findNodesbyFuzzyPath(sheet, searchQuery)
+            );
+
+            allMatches.sort((a, b) => b.matchConfidence - a.matchConfidence);
+
+            if (allMatches.length === 0) {
+                return {
+                    content: [{ type: "text", text: `No nodes found matching: ${searchQuery}` }],
+                };
+            }
+
+            return {
+                content: [{
+                    type: "text",
+                    text: JSON.stringify({
+                        matches: allMatches.slice(0, 5),
+                        totalMatches: allMatches.length,
+                        query: searchQuery
+                    }, null, 2)
+                }],
+            };
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            return {
+                content: [{ type: "text", text: `Error: ${errorMessage}` }],
+                isError: true,
+            };
+        }
+    }
+);
+
+// Tool: extract_node_by_id
+server.tool(
+    "extract_node_by_id",
+    `Extract a specific node and its subtree using its unique ID:
+- Find and extract node using its XMind ID
+- Return complete subtree structure
+- Preserve all node properties and relationships
+- Fast direct access without path traversal
+Note: For a more detailed view with fuzzy matching, use "extract_node" with the node's path`,
+    {
+        path: z.string().describe("Path to the .xmind file"),
+        nodeId: z.string().describe("Unique identifier of the node"),
+    },
+    async ({ path: filePath, nodeId }) => {
+        if (!isPathAllowed(filePath)) {
+            return {
+                content: [{ type: "text", text: `Error: Access denied - ${filePath} is not in an allowed directory` }],
+                isError: true,
+            };
+        }
+        try {
+            const parser = new XMindParser(filePath);
+            const mindmap = await parser.parse();
+
+            for (const sheet of mindmap) {
+                const result = findNodeById(sheet, nodeId);
+                if (result.found && result.node) {
+                    return {
+                        content: [{
+                            type: "text",
+                            text: JSON.stringify(result.node, null, 2)
+                        }],
+                    };
+                }
+            }
+
+            return {
+                content: [{ type: "text", text: `Node not found with ID: ${nodeId}` }],
+            };
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            return {
+                content: [{ type: "text", text: `Error: ${errorMessage}` }],
+                isError: true,
+            };
+        }
+    }
+);
+
+// Tool: search_nodes
+server.tool(
+    "search_nodes",
+    `Advanced node search with multiple criteria:
+- Search through titles, notes, labels, callouts and tasks
+- Filter by task status (todo/done)
+- Find nodes by their relationships
+- Configure which fields to search in
+- Case-sensitive or insensitive search
+- Get full context including task status
+- Returns all matching nodes with their IDs
+- Includes relationship information and task status`,
+    {
+        path: z.string().describe("Path to the .xmind file"),
+        query: z.string().describe("Search text"),
+        searchIn: z.array(z.enum(['title', 'notes', 'labels', 'callouts', 'tasks'])).optional()
+            .describe("Fields to search in"),
+        caseSensitive: z.boolean().optional().describe("Whether search is case-sensitive"),
+        taskStatus: z.enum(['todo', 'done']).optional().describe("Filter by task status"),
+    },
+    async ({ path: filePath, query, searchIn, caseSensitive, taskStatus }) => {
+        if (!isPathAllowed(filePath)) {
+            return {
+                content: [{ type: "text", text: `Error: Access denied - ${filePath} is not in an allowed directory` }],
+                isError: true,
+            };
+        }
+        try {
+            const parser = new XMindParser(filePath);
+            const mindmap = await parser.parse();
+
+            const matches: NodeMatch[] = mindmap.flatMap(sheet =>
+                searchNodes(sheet, query, {
+                    searchIn,
+                    caseSensitive,
+                    taskStatus
+                })
+            );
+
+            const result: SearchResult = {
+                query,
+                matches,
+                totalMatches: matches.length,
+                searchedIn: searchIn || ['title', 'notes', 'labels', 'callouts', 'tasks']
+            };
+
+            return {
+                content: [{
+                    type: "text",
+                    text: JSON.stringify(result, null, 2)
+                }],
+            };
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            return {
+                content: [{ type: "text", text: `Error: ${errorMessage}` }],
+                isError: true,
+            };
+        }
+    }
+);
 
 // Start server
-async function runServer() {
+async function runServer(): Promise<void> {
     const transport = new StdioServerTransport();
     await server.connect(transport);
     console.error("XMind Analysis Server running on stdio");

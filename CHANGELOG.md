@@ -1,5 +1,29 @@
 # Changelog
 
+## [2.0.0] - 2025-01-18
+
+### Breaking Changes
+- Upgraded to MCP SDK v1.11.0 (from v0.5.0)
+- Migrated from deprecated `Server` class to new `McpServer` API
+- Removed `zod-to-json-schema` and `diff` dependencies (no longer needed)
+
+### Added
+- Output schemas (Zod) for structured tool responses
+- Explicit type annotations for all async functions
+- Better schema descriptions for tool parameters
+
+### Changed
+- Refactored all tool registrations to use `server.tool()` method
+- Improved error handling with consistent error response format
+- Simplified notes handling (removed duplicate condition)
+- Updated `parseContentJson` to use native throw instead of Promise.reject
+- Upgraded Zod to v3.25.0 for SDK compatibility
+
+### Fixed
+- Fixed duplicate condition check in notes processing
+- Added missing return type `Promise<void>` to `scanDirectory` and `searchInDirectory` functions
+- Fixed `runServer` return type annotation
+
 ## [1.1.1] - 2024-01-20
 
 ### Added
