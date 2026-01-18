@@ -11,6 +11,8 @@
 - Output schemas (Zod) for structured tool responses
 - Explicit type annotations for all async functions
 - Better schema descriptions for tool parameters
+- Comprehensive unit test suite with vitest (25 tests)
+- Test helpers for creating XMind test fixtures
 
 ### Changed
 - Refactored all tool registrations to use `server.tool()` method
