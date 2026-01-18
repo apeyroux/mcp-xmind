@@ -1,7 +1,14 @@
 {
-  "name": "@41px/mcp-xmind",
+  "name": "@apeyroux/mcp-xmind",
   "version": "2.0.0",
   "description": "MCP server for XMind",
+  "mcpName": "io.github.apeyroux/mcp-xmind",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/apeyroux/mcp-xmind"
+  },
+  "homepage": "https://github.com/apeyroux/mcp-xmind#readme",
+  "keywords": ["mcp", "xmind", "mindmap", "model-context-protocol"],
   "license": "MIT",
   "author": "Alexandre Peyroux <alex@fmap.it>",
   "type": "module",
