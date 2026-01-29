@@ -15,8 +15,8 @@ startCommand:
         minItems: 1
   commandFunction: |-
     (config) => ({
-      command: 'node',
-      args: ['dist/index.js', ...config.allowedDirectories]
+      command: 'npx',
+      args: ['-y', '@41px/mcp-xmind', ...config.allowedDirectories]
     })
   exampleConfig:
     allowedDirectories:
