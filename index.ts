@@ -2,6 +2,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import crypto from "crypto";
 import fs from "fs/promises";
 import path from "path";
 import { z } from "zod";
@@ -44,9 +45,22 @@ interface XMindNode {
     title: string;
     id?: string;
     children?: XMindNode[];
+    structureClass?: string;
     taskStatus?: 'done' | 'todo';
+    progress?: number;
+    priority?: number;
+    startDate?: string;
+    dueDate?: string;
+    duration?: number;
+    dependencies?: {
+        id: string;
+        type: string;
+        lag: number;
+    }[];
+    markers?: string[];
     notes?: {
         content?: string;
+        html?: string;
     };
     href?: string;
     labels?: string[];
@@ -54,12 +68,24 @@ interface XMindNode {
     callouts?: {
         title: string;
     }[];
+    boundaries?: {
+        id: string;
+        range: string;
+        title?: string;
+    }[];
+    summaries?: {
+        id: string;
+        range: string;
+        topicId: string;
+        topicTitle?: string;
+    }[];
     relationships?: XMindRelationship[];
 }
 
 interface XMindTopic {
     id: string;
     title: string;
+    structureClass?: string;
     children?: {
         attached: XMindTopic[];
         callout?: XMindTopic[];
@@ -67,9 +93,20 @@ interface XMindTopic {
     extensions?: Array<{
         provider: string;
         content: {
-            status: 'done' | 'todo';
+            status?: 'done' | 'todo';
+            progress?: number;
+            priority?: number;
+            start?: number;
+            due?: number;
+            duration?: number;
+            creator?: string;
+            dependencies?: Array<{ id: string; type: string; lag: number }>;
         };
     }>;
+    markers?: Array<{ markerId: string }>;
+    boundaries?: Array<{ id: string; range: string; title?: string }>;
+    summaries?: Array<{ id: string; range: string; topicId: string }>;
+    summary?: Array<{ id: string; title: string }>;
     notes?: {
         plain?: {
             content: string;
@@ -147,6 +184,9 @@ class XMindParser {
             sheetTitle: sheetTitle || "Untitled Map"
         };
 
+        // Handle structure class
+        if (node.structureClass) processedNode.structureClass = node.structureClass;
+
         // Handle links, labels and callouts
         if (node.href) processedNode.href = node.href;
         if (node.labels) processedNode.labels = node.labels;
@@ -156,20 +196,54 @@ class XMindParser {
             }));
         }
 
-        // Handle notes - fixed duplicate condition
-        if (node.notes?.plain?.content) {
-            processedNode.notes = {
-                content: node.notes.plain.content
-            };
+        // Handle notes (plain + optional HTML)
+        if (node.notes?.plain?.content || node.notes?.realHTML?.content) {
+            processedNode.notes = {};
+            if (node.notes?.plain?.content) processedNode.notes.content = node.notes.plain.content;
+            if (node.notes?.realHTML?.content) processedNode.notes.html = node.notes.realHTML.content;
         }
 
-        // Handle task status
+        // Handle markers
+        if (node.markers && node.markers.length > 0) {
+            processedNode.markers = node.markers.map(m => m.markerId);
+        }
+
+        // Handle boundaries
+        if (node.boundaries && node.boundaries.length > 0) {
+            processedNode.boundaries = node.boundaries;
+        }
+
+        // Handle summaries
+        if (node.summaries && node.summaries.length > 0) {
+            processedNode.summaries = node.summaries.map(s => {
+                const entry: NonNullable<XMindNode['summaries']>[0] = {
+                    id: s.id,
+                    range: s.range,
+                    topicId: s.topicId,
+                };
+                // Find the summary topic title
+                if (node.summary) {
+                    const summaryTopic = node.summary.find(st => st.id === s.topicId);
+                    if (summaryTopic) entry.topicTitle = summaryTopic.title;
+                }
+                return entry;
+            });
+        }
+
+        // Handle task extension (status, progress, priority, dates)
         if (node.extensions) {
             const taskExtension = node.extensions.find((ext) =>
-                ext.provider === 'org.xmind.ui.task' && ext.content?.status
+                ext.provider === 'org.xmind.ui.task'
             );
             if (taskExtension) {
-                processedNode.taskStatus = taskExtension.content.status;
+                const c = taskExtension.content;
+                if (c.status) processedNode.taskStatus = c.status;
+                if (c.progress !== undefined) processedNode.progress = c.progress;
+                if (c.priority !== undefined) processedNode.priority = c.priority;
+                if (c.duration !== undefined) processedNode.duration = c.duration;
+                if (c.start !== undefined) processedNode.startDate = new Date(c.start).toISOString();
+                if (c.due !== undefined) processedNode.dueDate = new Date(c.due).toISOString();
+                if (c.dependencies && c.dependencies.length > 0) processedNode.dependencies = c.dependencies;
             }
         }
 
@@ -229,16 +303,35 @@ const SearchNodesArgsSchema = z.object({
 const XMindNodeSchema: z.ZodType<XMindNode> = z.lazy(() => z.object({
     title: z.string(),
     id: z.string().optional(),
+    structureClass: z.string().optional(),
     children: z.array(XMindNodeSchema).optional(),
     taskStatus: z.enum(['done', 'todo']).optional(),
+    progress: z.number().optional(),
+    priority: z.number().optional(),
+    startDate: z.string().optional(),
+    dueDate: z.string().optional(),
+    duration: z.number().optional(),
+    markers: z.array(z.string()).optional(),
     notes: z.object({
         content: z.string().optional(),
+        html: z.string().optional(),
     }).optional(),
     href: z.string().optional(),
     labels: z.array(z.string()).optional(),
     sheetTitle: z.string().optional(),
     callouts: z.array(z.object({
         title: z.string(),
+    })).optional(),
+    boundaries: z.array(z.object({
+        id: z.string(),
+        range: z.string(),
+        title: z.string().optional(),
+    })).optional(),
+    summaries: z.array(z.object({
+        id: z.string(),
+        range: z.string(),
+        topicId: z.string(),
+        topicTitle: z.string().optional(),
     })).optional(),
     relationships: z.array(z.object({
         id: z.string(),
@@ -903,6 +996,421 @@ server.tool(
                     type: "text",
                     text: JSON.stringify(result, null, 2)
                 }],
+            };
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            return {
+                content: [{ type: "text", text: `Error: ${errorMessage}` }],
+                isError: true,
+            };
+        }
+    }
+);
+
+// Helper: generate unique ID
+function generateId(): string {
+    return crypto.randomUUID().replace(/-/g, '').substring(0, 26);
+}
+
+// Schemas for create_xmind input
+const CreateTopicSchema: z.ZodType<{
+    title: string;
+    children?: unknown[];
+    notes?: string | { plain?: string; html?: string };
+    href?: string;
+    linkToTopic?: string;
+    labels?: string[];
+    markers?: string[];
+    callouts?: string[];
+    boundaries?: { range: string; title?: string }[];
+    summaryTopics?: { range: string; title: string }[];
+    structureClass?: string;
+    taskStatus?: 'todo' | 'done';
+    progress?: number;
+    priority?: number;
+    startDate?: string;
+    dueDate?: string;
+    durationDays?: number;
+    dependencies?: { targetTitle: string; type: 'FS' | 'FF' | 'SS' | 'SF'; lag?: number }[];
+}> = z.lazy(() => z.object({
+    title: z.string().describe("Topic title"),
+    children: z.array(CreateTopicSchema).optional().describe("Child topics"),
+    notes: z.union([
+        z.string(),
+        z.object({
+            plain: z.string().optional().describe("Plain text content"),
+            html: z.string().optional().describe("HTML formatted content (supports <strong>, <u>, <ul>, <ol>, <li>, <br>)"),
+        }),
+    ]).optional().describe("Notes: string for plain text, or {plain?, html?} for formatted notes"),
+    href: z.string().optional().describe("URL link (external)"),
+    linkToTopic: z.string().optional().describe("Title of a topic to link to (creates internal xmind:# link, works across sheets)"),
+    labels: z.array(z.string()).optional().describe("Labels/tags"),
+    markers: z.array(z.string()).optional().describe("Marker IDs (e.g. 'task-done', 'task-start', 'priority-1')"),
+    callouts: z.array(z.string()).optional().describe("Callout text bubbles attached to this topic"),
+    boundaries: z.array(z.object({
+        range: z.string().describe("Range of children to group, e.g. '(1,3)'"),
+        title: z.string().optional().describe("Boundary label"),
+    })).optional().describe("Visual boundaries grouping children"),
+    summaryTopics: z.array(z.object({
+        range: z.string().describe("Range of children to summarize, e.g. '(0,2)'"),
+        title: z.string().describe("Summary topic title"),
+    })).optional().describe("Summary topics spanning children ranges"),
+    structureClass: z.string().optional().describe("Layout structure: 'org.xmind.ui.map.clockwise', 'org.xmind.ui.map.unbalanced', 'org.xmind.ui.logic.right', 'org.xmind.ui.org-chart.down', 'org.xmind.ui.tree.right', 'org.xmind.ui.fishbone.leftHeaded', 'org.xmind.ui.timeline.horizontal'"),
+    taskStatus: z.enum(['todo', 'done']).optional().describe("Simple to-do checkbox: 'todo' (unchecked) or 'done' (checked). Use ONLY for simple checklists without dates."),
+    progress: z.number().min(0).max(1).optional().describe("Planned Task: completion progress 0.0 to 1.0. Use with startDate/dueDate for project planning."),
+    priority: z.number().min(1).max(9).optional().describe("Planned Task: priority level 1-9 (1=highest)"),
+    startDate: z.string().optional().describe("Planned Task: start date in ISO 8601 (e.g. '2026-02-01T00:00:00Z'). Enables timeline/Gantt view in XMind."),
+    dueDate: z.string().optional().describe("Planned Task: due date in ISO 8601 (e.g. '2026-02-15T00:00:00Z'). Enables timeline/Gantt view in XMind."),
+    durationDays: z.number().min(1).optional().describe("Planned Task: duration in days (without dates). XMind auto-calculates dates from dependencies. Preferred for relative planning."),
+    dependencies: z.array(z.object({
+        targetTitle: z.string().describe("Title of the dependency target topic"),
+        type: z.enum(['FS', 'FF', 'SS', 'SF']).describe("FS=Finish-Start, FF=Finish-Finish, SS=Start-Start, SF=Start-Finish"),
+        lag: z.number().optional().describe("Lag in days (default 0)"),
+    })).optional().describe("Task dependencies for automatic scheduling (use with durationDays instead of explicit dates)"),
+}));
+
+const CreateRelationshipSchema = z.object({
+    sourceTitle: z.string().describe("Title of source topic"),
+    targetTitle: z.string().describe("Title of target topic"),
+    title: z.string().optional().describe("Relationship label"),
+});
+
+const CreateSheetSchema = z.object({
+    title: z.string().describe("Sheet title"),
+    rootTopic: CreateTopicSchema.describe("Root topic of the sheet"),
+    relationships: z.array(CreateRelationshipSchema).optional().describe("Relationships between topics (by title)"),
+    theme: z.enum(['default', 'business', 'dark', 'simple']).optional().describe("Visual theme for the sheet"),
+});
+
+// Predefined themes
+const THEMES: Record<string, Record<string, unknown>> = {
+    default: {},
+    business: {
+        centralTopic: { id: generateId(), properties: { "fo:font-family": "NeverMind", "fo:font-size": "30pt", "fo:font-weight": "800", "svg:fill": "#0D0D0D", "fill-pattern": "none", "line-width": "2pt", "line-color": "#0D0D0D", "line-pattern": "solid", "shape-class": "org.xmind.topicShape.roundedRect", "line-class": "org.xmind.branchConnection.curve" } },
+        mainTopic: { id: generateId(), properties: { "fo:font-family": "NeverMind", "fo:font-size": "18pt", "fo:font-weight": "500", "fill-pattern": "solid", "line-width": "2pt", "shape-class": "org.xmind.topicShape.roundedRect", "line-class": "org.xmind.branchConnection.roundedElbow" } },
+        subTopic: { id: generateId(), properties: { "fo:font-family": "NeverMind", "fo:font-size": "14pt", "fo:font-weight": "400", "fill-pattern": "none", "line-width": "2pt", "shape-class": "org.xmind.topicShape.roundedRect", "line-class": "org.xmind.branchConnection.roundedElbow" } },
+        importantTopic: { id: generateId(), properties: { "fo:font-weight": "bold", "svg:fill": "#dff116ff", "fill-pattern": "solid", "border-line-color": "#dff116ff", "border-line-width": "0" } },
+        minorTopic: { id: generateId(), properties: { "fo:font-weight": "bold", "svg:fill": "#3bf115ff", "fill-pattern": "solid", "border-line-color": "#3bf115ff", "border-line-width": "0" } },
+        expiredTopic: { id: generateId(), properties: { "fo:text-decoration": "line-through", "fill-pattern": "none" } },
+        map: { id: generateId(), properties: { "svg:fill": "#FFFFFF", "multi-line-colors": "#F22816 #F2B807 #233ED9", "color-list": "#FFFFFF #F2F2F2 #F22816 #F2B807 #233ED9 #0D0D0D", "line-tapered": "none" } },
+    },
+    dark: {
+        centralTopic: { id: generateId(), properties: { "fo:font-family": "NeverMind", "fo:font-size": "30pt", "fo:font-weight": "800", "fo:color": "#FFFFFF", "svg:fill": "#2D2D2D", "fill-pattern": "solid", "line-width": "2pt", "line-color": "#FFFFFF", "line-pattern": "solid", "shape-class": "org.xmind.topicShape.roundedRect", "line-class": "org.xmind.branchConnection.curve" } },
+        mainTopic: { id: generateId(), properties: { "fo:font-family": "NeverMind", "fo:font-size": "18pt", "fo:font-weight": "500", "fo:color": "#FFFFFF", "fill-pattern": "solid", "line-width": "2pt", "shape-class": "org.xmind.topicShape.roundedRect", "line-class": "org.xmind.branchConnection.roundedElbow" } },
+        subTopic: { id: generateId(), properties: { "fo:font-family": "NeverMind", "fo:font-size": "14pt", "fo:font-weight": "400", "fo:color": "#CCCCCC", "fill-pattern": "none", "line-width": "2pt", "shape-class": "org.xmind.topicShape.roundedRect", "line-class": "org.xmind.branchConnection.roundedElbow" } },
+        map: { id: generateId(), properties: { "svg:fill": "#1A1A1A", "multi-line-colors": "#FF6B6B #FFD93D #6BCB77", "color-list": "#1A1A1A #2D2D2D #FF6B6B #FFD93D #6BCB77 #FFFFFF", "line-tapered": "none" } },
+    },
+    simple: {
+        centralTopic: { id: generateId(), properties: { "fo:font-family": "NeverMind", "fo:font-size": "24pt", "fo:font-weight": "600", "svg:fill": "#FFFFFF", "fill-pattern": "solid", "line-width": "1pt", "line-color": "#333333", "line-pattern": "solid", "shape-class": "org.xmind.topicShape.roundedRect", "line-class": "org.xmind.branchConnection.curve" } },
+        mainTopic: { id: generateId(), properties: { "fo:font-family": "NeverMind", "fo:font-size": "16pt", "fo:font-weight": "400", "fill-pattern": "solid", "line-width": "1pt", "shape-class": "org.xmind.topicShape.roundedRect", "line-class": "org.xmind.branchConnection.roundedElbow" } },
+        subTopic: { id: generateId(), properties: { "fo:font-family": "NeverMind", "fo:font-size": "13pt", "fo:font-weight": "400", "fill-pattern": "none", "line-width": "1pt", "shape-class": "org.xmind.topicShape.roundedRect", "line-class": "org.xmind.branchConnection.roundedElbow" } },
+        map: { id: generateId(), properties: { "svg:fill": "#FFFFFF", "multi-line-colors": "#4A90D9 #50C878 #FF8C42", "color-list": "#FFFFFF #F5F5F5 #4A90D9 #50C878 #FF8C42 #333333", "line-tapered": "none" } },
+    },
+};
+
+const CreateXMindArgsSchema = z.object({
+    path: z.string().describe("Output path for the .xmind file (must end with .xmind)"),
+    sheets: z.array(CreateSheetSchema).min(1).describe("Sheets to create"),
+    overwrite: z.boolean().optional().default(false).describe("Overwrite existing file"),
+});
+
+// XMind Builder class
+class XMindBuilder {
+    private titleToId: Map<string, string> = new Map();
+    private pendingDependencies: Map<string, { targetTitle: string; type: string; lag?: number }[]> = new Map();
+    private pendingLinks: Map<string, string> = new Map(); // topicId -> targetTitle
+
+    build(sheets: z.infer<typeof CreateXMindArgsSchema>['sheets']): {
+        content: string;
+        metadata: string;
+        manifest: string;
+    } {
+        this.titleToId.clear();
+        this.pendingDependencies.clear();
+        this.pendingLinks.clear();
+
+        // First pass: build all sheets (populates titleToId across all sheets)
+        const builtSheets: { rootTopic: XMindTopic; sheet: typeof sheets[0] }[] = [];
+        for (const sheet of sheets) {
+            const rootTopic = this.buildTopic(sheet.rootTopic as z.infer<typeof CreateTopicSchema>);
+            this.resolveDependencies(rootTopic);
+            builtSheets.push({ rootTopic, sheet });
+        }
+
+        // Second pass: resolve linkToTopic -> xmind:#id
+        for (const { rootTopic } of builtSheets) {
+            this.resolveLinks(rootTopic);
+        }
+
+        const contentJson = builtSheets.map(({ rootTopic, sheet }) => {
+            const sheetTheme = sheet.theme ? THEMES[sheet.theme] || {} : {};
+            const hasPlannedTasks = this.hasPlannedTasks(sheet.rootTopic as z.infer<typeof CreateTopicSchema>);
+            const sheetObj: Record<string, unknown> = {
+                id: generateId(),
+                class: "sheet",
+                title: sheet.title,
+                rootTopic,
+                topicOverlapping: "overlap",
+                theme: sheetTheme,
+            };
+            if (hasPlannedTasks) {
+                sheetObj.extensions = [{
+                    provider: "org.xmind.ui.working-day-settings",
+                    content: {
+                        id: "YmFzaWMtY2FsZW5kYXI=",
+                        name: "Calendrier de base",
+                        defaultWorkingDays: [1, 2, 3, 4, 5],
+                        rules: [],
+                    },
+                }];
+            }
+            if (sheet.relationships && sheet.relationships.length > 0) {
+                sheetObj.relationships = sheet.relationships.map(rel => {
+                    const end1Id = this.titleToId.get(rel.sourceTitle);
+                    const end2Id = this.titleToId.get(rel.targetTitle);
+                    if (!end1Id) throw new Error(`Relationship source topic not found: "${rel.sourceTitle}"`);
+                    if (!end2Id) throw new Error(`Relationship target topic not found: "${rel.targetTitle}"`);
+                    const relObj: Record<string, string> = {
+                        id: generateId(),
+                        end1Id,
+                        end2Id,
+                    };
+                    if (rel.title) relObj.title = rel.title;
+                    return relObj;
+                });
+            }
+            return sheetObj;
+        });
+
+        const metadata = JSON.stringify({
+            dataStructureVersion: "3",
+            creator: { name: "mcp-xmind", version: "2.0.0" },
+            layoutEngineVersion: "5",
+        });
+        const manifest = JSON.stringify({ "file-entries": { "content.json": {}, "metadata.json": {}, "Thumbnails/thumbnail.png": {} } });
+
+        return {
+            content: JSON.stringify(contentJson),
+            metadata,
+            manifest,
+        };
+    }
+
+    private resolveLinks(topic: XMindTopic): void {
+        const targetTitle = this.pendingLinks.get(topic.id);
+        if (targetTitle) {
+            const targetId = this.titleToId.get(targetTitle);
+            if (!targetId) throw new Error(`Link target topic not found: "${targetTitle}"`);
+            (topic as unknown as Record<string, unknown>).href = `xmind:#${targetId}`;
+        }
+        if (topic.children?.attached) {
+            for (const child of topic.children.attached) this.resolveLinks(child);
+        }
+        if (topic.children?.callout) {
+            for (const child of topic.children.callout) this.resolveLinks(child);
+        }
+    }
+
+    private resolveDependencies(topic: XMindTopic): void {
+        const deps = this.pendingDependencies.get(topic.id);
+        if (deps && topic.extensions) {
+            const taskExt = topic.extensions.find(e => e.provider === 'org.xmind.ui.task');
+            if (taskExt) {
+                const resolved = deps.map(d => {
+                    const targetId = this.titleToId.get(d.targetTitle);
+                    if (!targetId) throw new Error(`Dependency target not found: "${d.targetTitle}"`);
+                    return { id: targetId, type: d.type, lag: d.lag ?? 0 };
+                });
+                (taskExt.content as Record<string, unknown>).dependencies = resolved;
+            }
+        }
+        if (topic.children?.attached) {
+            for (const child of topic.children.attached) {
+                this.resolveDependencies(child);
+            }
+        }
+    }
+
+    private hasPlannedTasks(input: z.infer<typeof CreateTopicSchema>): boolean {
+        if (input.startDate || input.dueDate || input.progress !== undefined || input.durationDays !== undefined) return true;
+        if (input.children) {
+            return input.children.some(c => this.hasPlannedTasks(c as z.infer<typeof CreateTopicSchema>));
+        }
+        return false;
+    }
+
+    private buildTopic(input: z.infer<typeof CreateTopicSchema>): XMindTopic {
+        const id = generateId();
+        this.titleToId.set(input.title, id);
+
+        const topic: Record<string, unknown> & XMindTopic = { id, class: "topic", title: input.title };
+
+        if (input.structureClass) {
+            topic.structureClass = input.structureClass;
+        }
+
+        if (input.notes) {
+            if (typeof input.notes === 'string') {
+                topic.notes = { plain: { content: input.notes } };
+            } else {
+                topic.notes = {};
+                if (input.notes.plain) topic.notes.plain = { content: input.notes.plain };
+                if (input.notes.html) topic.notes.realHTML = { content: input.notes.html };
+            }
+        }
+        if (input.href) {
+            topic.href = input.href;
+        }
+        if (input.linkToTopic) {
+            this.pendingLinks.set(id, input.linkToTopic);
+        }
+        if (input.labels) {
+            topic.labels = input.labels;
+        }
+        if (input.markers && input.markers.length > 0) {
+            topic.markers = input.markers.map(m => ({ markerId: m }));
+        }
+        // Build task extension (simple status and/or Gantt properties)
+        const hasTaskProps = input.taskStatus || input.progress !== undefined ||
+            input.priority !== undefined || input.startDate || input.dueDate ||
+            input.durationDays !== undefined || input.dependencies;
+        if (hasTaskProps) {
+            const taskContent: Record<string, unknown> = {};
+            if (input.taskStatus) taskContent.status = input.taskStatus;
+            if (input.progress !== undefined) taskContent.progress = input.progress;
+            if (input.priority !== undefined) taskContent.priority = input.priority;
+            if (input.startDate) taskContent.start = new Date(input.startDate).getTime();
+            if (input.dueDate) {
+                taskContent.due = new Date(input.dueDate).getTime();
+                if (input.startDate) {
+                    taskContent.duration = new Date(input.dueDate).getTime() - new Date(input.startDate).getTime();
+                }
+            }
+            if (input.durationDays !== undefined && !input.startDate) {
+                taskContent.duration = input.durationDays * 86400000;
+            }
+            if (input.dependencies && input.dependencies.length > 0) {
+                // Store for deferred resolution (titles -> IDs)
+                this.pendingDependencies.set(id, input.dependencies);
+            }
+            topic.extensions = [{
+                provider: 'org.xmind.ui.task',
+                content: taskContent as NonNullable<XMindTopic['extensions']>[0]['content'],
+            }];
+        }
+        // Boundaries
+        if (input.boundaries && input.boundaries.length > 0) {
+            topic.boundaries = input.boundaries.map(b => ({
+                id: generateId(),
+                range: b.range,
+                ...(b.title ? { title: b.title } : {}),
+            }));
+        }
+
+        // Summaries
+        if (input.summaryTopics && input.summaryTopics.length > 0) {
+            topic.summaries = input.summaryTopics.map(s => {
+                const topicId = generateId();
+                return { id: generateId(), range: s.range, topicId };
+            });
+            topic.summary = input.summaryTopics.map((s, i) => ({
+                id: topic.summaries![i].topicId,
+                title: s.title,
+            }));
+        }
+
+        const attached = input.children && input.children.length > 0
+            ? input.children.map(c => this.buildTopic(c as z.infer<typeof CreateTopicSchema>))
+            : undefined;
+        const callout = input.callouts && input.callouts.length > 0
+            ? input.callouts.map(text => ({ id: generateId(), title: text } as XMindTopic))
+            : undefined;
+        if (attached || callout) {
+            topic.children = {} as NonNullable<XMindTopic['children']>;
+            if (attached) topic.children!.attached = attached;
+            if (callout) topic.children!.callout = callout;
+        }
+
+        return topic;
+    }
+}
+
+// Tool: create_xmind
+server.tool(
+    "create_xmind",
+    `Create a new XMind mind map file from structured data.
+
+FEATURES:
+- Nested topics with notes, labels, links (href or linkToTopic for internal links across sheets), callouts
+- Boundaries (visual grouping of children) and summaries
+- Relationships between topics (by title)
+- Overwrite protection (set overwrite=true to replace)
+
+SIMPLE TO-DO (checkbox): Use taskStatus='todo' or 'done'. No dates needed.
+  Example: { "title": "Buy milk", "taskStatus": "todo" }
+
+PLANNED TASK - Two approaches:
+1. RELATIVE (preferred for planning): Use durationDays + dependencies. XMind auto-calculates dates.
+   Example: { "title": "Dev", "durationDays": 5, "progress": 0, "dependencies": [{"targetTitle": "Analysis", "type": "FS"}] }
+   Dependency types: FS=Finish-Start, FF=Finish-Finish, SS=Start-Start, SF=Start-Finish
+2. ABSOLUTE: Use startDate + dueDate (ISO 8601) + progress + priority for fixed dates.
+   Example: { "title": "Phase 1", "startDate": "2026-02-01T00:00:00Z", "dueDate": "2026-02-15T00:00:00Z", "progress": 0.0, "priority": 1 }
+
+MARKERS: Visual icons - 'task-done' (checked), 'task-start' (clock), 'priority-1' to 'priority-9'
+
+IMPORTANT: When user mentions "planning", "schedule", "timeline", "Gantt", "project", "deployment", "phases", use RELATIVE planned tasks (durationDays + dependencies) unless specific dates are given.`,
+    {
+        path: z.string().describe("Output path for the .xmind file (must end with .xmind)"),
+        sheets: z.array(CreateSheetSchema).min(1).describe("Sheets to create"),
+        overwrite: z.boolean().optional().default(false).describe("Overwrite existing file"),
+    },
+    async ({ path: filePath, sheets, overwrite }) => {
+        // Validate extension
+        if (!filePath.toLowerCase().endsWith('.xmind')) {
+            return {
+                content: [{ type: "text", text: "Error: File path must end with .xmind" }],
+                isError: true,
+            };
+        }
+
+        const resolvedPath = path.resolve(filePath);
+
+        // Validate allowed directory
+        if (!isPathAllowed(resolvedPath)) {
+            return {
+                content: [{ type: "text", text: `Error: Access denied - ${filePath} is not in an allowed directory` }],
+                isError: true,
+            };
+        }
+
+        // Check overwrite
+        try {
+            await fs.access(resolvedPath);
+            if (!overwrite) {
+                return {
+                    content: [{ type: "text", text: `Error: File already exists: ${filePath}. Set overwrite=true to replace.` }],
+                    isError: true,
+                };
+            }
+        } catch {
+            // File doesn't exist, OK
+        }
+
+        try {
+            const builder = new XMindBuilder();
+            const { content, metadata, manifest } = builder.build(sheets);
+
+            const zip = new AdmZip();
+            zip.addFile('content.json', Buffer.from(content, 'utf-8'));
+            zip.addFile('metadata.json', Buffer.from(metadata, 'utf-8'));
+            zip.addFile('manifest.json', Buffer.from(manifest, 'utf-8'));
+
+            // Ensure parent directory exists
+            await fs.mkdir(path.dirname(resolvedPath), { recursive: true });
+            zip.writeZip(resolvedPath);
+
+            return {
+                content: [{ type: "text", text: `XMind file created: ${resolvedPath}` }],
             };
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : String(error);

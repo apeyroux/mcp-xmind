@@ -438,4 +438,416 @@ describe('XMind MCP Server', () => {
             expect(data[1].error).toBeDefined();
         });
     });
+
+    describe('create_xmind tool', () => {
+        it('should create a simple XMind file and read it back', async () => {
+            const outputPath = path.join(testDirPath, 'created-simple.xmind');
+
+            const result = await client.callTool({
+                name: 'create_xmind',
+                arguments: {
+                    path: outputPath,
+                    sheets: [{
+                        title: 'My Sheet',
+                        rootTopic: {
+                            title: 'Central Topic',
+                            children: [
+                                { title: 'Branch A', notes: 'Note on A' },
+                                { title: 'Branch B', labels: ['urgent'] },
+                            ],
+                        },
+                    }],
+                },
+            });
+
+            const text = getResultText(result);
+            expect(text).toContain('created');
+
+            // Read back with read_xmind
+            const readResult = await client.callTool({
+                name: 'read_xmind',
+                arguments: { path: outputPath },
+            });
+
+            const data = parseResultJson<XMindNode[]>(readResult);
+            expect(data[0].title).toBe('Central Topic');
+            expect(data[0].children).toHaveLength(2);
+            expect(data[0].children![0].title).toBe('Branch A');
+            expect(data[0].children![0].notes?.content).toBe('Note on A');
+            expect(data[0].children![1].labels).toEqual(['urgent']);
+        });
+
+        it('should create multi-sheet file with relationships', async () => {
+            const outputPath = path.join(testDirPath, 'created-multi.xmind');
+
+            const result = await client.callTool({
+                name: 'create_xmind',
+                arguments: {
+                    path: outputPath,
+                    sheets: [
+                        {
+                            title: 'Sheet 1',
+                            rootTopic: {
+                                title: 'Root 1',
+                                children: [
+                                    { title: 'Topic A' },
+                                    { title: 'Topic B' },
+                                ],
+                            },
+                            relationships: [
+                                { sourceTitle: 'Topic A', targetTitle: 'Topic B', title: 'depends on' },
+                            ],
+                        },
+                        {
+                            title: 'Sheet 2',
+                            rootTopic: {
+                                title: 'Root 2',
+                                children: [
+                                    { title: 'Topic C', taskStatus: 'todo' },
+                                ],
+                            },
+                        },
+                    ],
+                },
+            });
+
+            const text = getResultText(result);
+            expect(text).toContain('created');
+
+            const readResult = await client.callTool({
+                name: 'read_xmind',
+                arguments: { path: outputPath },
+            });
+
+            const data = parseResultJson<XMindNode[]>(readResult);
+            expect(data).toHaveLength(2);
+            expect(data[0].relationships).toHaveLength(1);
+            expect(data[0].relationships![0].title).toBe('depends on');
+            expect(data[1].children![0].taskStatus).toBe('todo');
+        });
+
+        it('should reject path outside allowed directories', async () => {
+            const result = await client.callTool({
+                name: 'create_xmind',
+                arguments: {
+                    path: '/tmp/not-allowed/test.xmind',
+                    sheets: [{
+                        title: 'Sheet',
+                        rootTopic: { title: 'Root' },
+                    }],
+                },
+            });
+
+            const text = getResultText(result);
+            expect(text).toContain('Error');
+            expect(text).toContain('Access denied');
+        });
+
+        it('should reject overwrite when overwrite is false', async () => {
+            const outputPath = path.join(testDirPath, 'created-simple.xmind');
+
+            // File was already created by a previous test
+            const result = await client.callTool({
+                name: 'create_xmind',
+                arguments: {
+                    path: outputPath,
+                    sheets: [{
+                        title: 'Sheet',
+                        rootTopic: { title: 'Root' },
+                    }],
+                },
+            });
+
+            const text = getResultText(result);
+            expect(text).toContain('already exists');
+        });
+
+        it('should allow overwrite when overwrite is true', async () => {
+            const outputPath = path.join(testDirPath, 'created-simple.xmind');
+
+            const result = await client.callTool({
+                name: 'create_xmind',
+                arguments: {
+                    path: outputPath,
+                    sheets: [{
+                        title: 'Overwritten',
+                        rootTopic: { title: 'New Root' },
+                    }],
+                    overwrite: true,
+                },
+            });
+
+            const text = getResultText(result);
+            expect(text).toContain('created');
+
+            const readResult = await client.callTool({
+                name: 'read_xmind',
+                arguments: { path: outputPath },
+            });
+            const data = parseResultJson<XMindNode[]>(readResult);
+            expect(data[0].title).toBe('New Root');
+        });
+
+        it('should reject non-.xmind extension', async () => {
+            const result = await client.callTool({
+                name: 'create_xmind',
+                arguments: {
+                    path: path.join(testDirPath, 'file.txt'),
+                    sheets: [{
+                        title: 'Sheet',
+                        rootTopic: { title: 'Root' },
+                    }],
+                },
+            });
+
+            const text = getResultText(result);
+            expect(text).toContain('Error');
+            expect(text).toContain('.xmind');
+        });
+
+        it('should create XMind file with Gantt properties and read them back', async () => {
+            const outputPath = path.join(testDirPath, 'created-gantt.xmind');
+
+            const result = await client.callTool({
+                name: 'create_xmind',
+                arguments: {
+                    path: outputPath,
+                    sheets: [{
+                        title: 'Project Plan',
+                        rootTopic: {
+                            title: 'Project',
+                            children: [
+                                {
+                                    title: 'Task with dates',
+                                    progress: 0.5,
+                                    priority: 1,
+                                    startDate: '2026-02-01T00:00:00.000Z',
+                                    dueDate: '2026-02-15T00:00:00.000Z',
+                                    markers: ['task-start'],
+                                },
+                                {
+                                    title: 'Simple todo',
+                                    taskStatus: 'todo',
+                                    markers: ['task-start'],
+                                },
+                                {
+                                    title: 'Done task',
+                                    taskStatus: 'done',
+                                    markers: ['task-done'],
+                                },
+                            ],
+                        },
+                    }],
+                },
+            });
+
+            const text = getResultText(result);
+            expect(text).toContain('created');
+
+            // Read back and verify Gantt data
+            const readResult = await client.callTool({
+                name: 'read_xmind',
+                arguments: { path: outputPath },
+            });
+
+            const data = parseResultJson<XMindNode[]>(readResult);
+            const ganttTask = data[0].children!.find(c => c.title === 'Task with dates')!;
+            expect(ganttTask.progress).toBe(0.5);
+            expect(ganttTask.priority).toBe(1);
+            expect(ganttTask.startDate).toBe('2026-02-01T00:00:00.000Z');
+            expect(ganttTask.dueDate).toBe('2026-02-15T00:00:00.000Z');
+            expect(ganttTask.markers).toContain('task-start');
+
+            const todoTask = data[0].children!.find(c => c.title === 'Simple todo')!;
+            expect(todoTask.taskStatus).toBe('todo');
+            expect(todoTask.markers).toContain('task-start');
+
+            const doneTask = data[0].children!.find(c => c.title === 'Done task')!;
+            expect(doneTask.taskStatus).toBe('done');
+            expect(doneTask.markers).toContain('task-done');
+        });
+        it('should create XMind file with callouts and read them back', async () => {
+            const outputPath = path.join(testDirPath, 'created-callouts.xmind');
+
+            const result = await client.callTool({
+                name: 'create_xmind',
+                arguments: {
+                    path: outputPath,
+                    sheets: [{
+                        title: 'Sheet',
+                        rootTopic: {
+                            title: 'Root',
+                            children: [
+                                {
+                                    title: 'Topic with callout',
+                                    callouts: ['Attention!', 'Note importante'],
+                                },
+                            ],
+                        },
+                    }],
+                },
+            });
+
+            expect(getResultText(result)).toContain('created');
+
+            const readResult = await client.callTool({
+                name: 'read_xmind',
+                arguments: { path: outputPath },
+            });
+
+            const data = parseResultJson<XMindNode[]>(readResult);
+            const topic = data[0].children![0];
+            expect(topic.callouts).toHaveLength(2);
+            expect(topic.callouts![0].title).toBe('Attention!');
+            expect(topic.callouts![1].title).toBe('Note importante');
+        });
+        it('should create XMind file with boundaries and summaries', async () => {
+            const outputPath = path.join(testDirPath, 'created-boundaries.xmind');
+
+            const result = await client.callTool({
+                name: 'create_xmind',
+                arguments: {
+                    path: outputPath,
+                    sheets: [{
+                        title: 'Sheet',
+                        rootTopic: {
+                            title: 'Root',
+                            children: [
+                                { title: 'A' },
+                                { title: 'B' },
+                                { title: 'C' },
+                                { title: 'D' },
+                            ],
+                            boundaries: [{ range: '(1,3)', title: 'Group BC' }],
+                            summaryTopics: [{ range: '(0,2)', title: 'Summary ABC' }],
+                        },
+                    }],
+                },
+            });
+
+            expect(getResultText(result)).toContain('created');
+
+            const readResult = await client.callTool({
+                name: 'read_xmind',
+                arguments: { path: outputPath },
+            });
+
+            const data = parseResultJson<XMindNode[]>(readResult);
+            const root = data[0];
+            expect(root.boundaries).toHaveLength(1);
+            expect(root.boundaries![0].range).toBe('(1,3)');
+            expect(root.boundaries![0].title).toBe('Group BC');
+            expect(root.summaries).toHaveLength(1);
+            expect(root.summaries![0].range).toBe('(0,2)');
+            expect(root.summaries![0].topicTitle).toBe('Summary ABC');
+        });
+        it('should create XMind file with structureClass and theme', async () => {
+            const outputPath = path.join(testDirPath, 'created-theme.xmind');
+
+            const result = await client.callTool({
+                name: 'create_xmind',
+                arguments: {
+                    path: outputPath,
+                    sheets: [{
+                        title: 'Themed Sheet',
+                        theme: 'business',
+                        rootTopic: {
+                            title: 'Central',
+                            structureClass: 'org.xmind.ui.map.clockwise',
+                            children: [
+                                { title: 'Branch 1' },
+                                { title: 'Branch 2' },
+                            ],
+                        },
+                    }],
+                },
+            });
+
+            expect(getResultText(result)).toContain('created');
+
+            const readResult = await client.callTool({
+                name: 'read_xmind',
+                arguments: { path: outputPath },
+            });
+
+            const data = parseResultJson<XMindNode[]>(readResult);
+            expect(data[0].structureClass).toBe('org.xmind.ui.map.clockwise');
+        });
+
+        it('should round-trip HTML formatted notes', async () => {
+            const outputPath = path.join(testDirPath, 'html-notes.xmind');
+            const result = await client.callTool({
+                name: 'create_xmind',
+                arguments: {
+                    path: outputPath,
+                    sheets: [{
+                        title: 'Notes Test',
+                        rootTopic: {
+                            title: 'Root',
+                            notes: { plain: 'Plain version', html: '<p><strong>Bold</strong> and <u>underline</u></p>' },
+                            children: [
+                                { title: 'Simple Note', notes: 'Just plain text' },
+                            ],
+                        },
+                    }],
+                },
+            });
+
+            expect(getResultText(result)).toContain('created');
+
+            const readResult = await client.callTool({
+                name: 'read_xmind',
+                arguments: { path: outputPath },
+            });
+
+            const data = parseResultJson<XMindNode[]>(readResult);
+            expect(data[0].notes?.content).toBe('Plain version');
+            expect(data[0].notes?.html).toContain('<strong>Bold</strong>');
+            // Simple string notes should only have plain content
+            expect(data[0].children?.[0].notes?.content).toBe('Just plain text');
+            expect(data[0].children?.[0].notes?.html).toBeUndefined();
+        });
+
+        it('should resolve linkToTopic across sheets', async () => {
+            const outputPath = path.join(testDirPath, 'cross-link.xmind');
+            const result = await client.callTool({
+                name: 'create_xmind',
+                arguments: {
+                    path: outputPath,
+                    sheets: [
+                        {
+                            title: 'Sheet 1',
+                            rootTopic: {
+                                title: 'Root A',
+                                linkToTopic: 'Root B',
+                            },
+                        },
+                        {
+                            title: 'Sheet 2',
+                            rootTopic: {
+                                title: 'Root B',
+                                linkToTopic: 'Root A',
+                            },
+                        },
+                    ],
+                },
+            });
+
+            expect(getResultText(result)).toContain('created');
+
+            const readResult = await client.callTool({
+                name: 'read_xmind',
+                arguments: { path: outputPath },
+            });
+
+            const data = parseResultJson<XMindNode[]>(readResult);
+            // Root A should link to Root B's ID
+            expect(data[0].href).toMatch(/^xmind:#/);
+            // Root B should link to Root A's ID
+            expect(data[1].href).toMatch(/^xmind:#/);
+            // Cross-check: Root A's href contains Root B's id
+            expect(data[0].href).toBe(`xmind:#${data[1].id}`);
+            expect(data[1].href).toBe(`xmind:#${data[0].id}`);
+        });
+    });
 });

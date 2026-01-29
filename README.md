@@ -1,33 +1,40 @@
 # MCP XMind Server
 
-A Model Context Protocol server for analyzing and querying XMind mind maps. This tool provides powerful capabilities for searching, extracting, and analyzing content from XMind files.
+A Model Context Protocol server for reading, creating and querying XMind mind maps. This tool provides powerful capabilities for searching, extracting, analyzing and generating XMind files.
 
 ## Features
 
-- 🔍 Smart fuzzy search across mind maps
-- 📝 Task management and tracking (todo/done status)
-- 🌲 Hierarchical content navigation
-- 🔗 Link and reference extraction
-- 📊 Multi-file analysis
-- 🏷️ Label and tag support
-- 📂 Directory scanning
-- 🔒 Secure directory access
+### Reading
+- Parse complete mind map structure (multi-sheet)
+- Smart fuzzy search across mind maps
+- Task management and tracking (to-do + planned tasks)
+- Hierarchical content navigation
+- Link and reference extraction (external URLs + internal xmind:# links)
+- Multi-file analysis
+- Label, callout, boundary and summary support
+- Directory scanning
+
+### Writing
+- Create XMind files from structured JSON
+- Nested topics with notes (plain text + HTML formatting)
+- Labels, markers, callouts, boundaries, summaries
+- Relationships between topics (by title)
+- Internal links between topics across sheets (`linkToTopic`)
+- Simple to-do tasks (checkbox)
+- Planned tasks with Gantt support (dates, progress, priority, duration, dependencies)
+- Predefined themes (default, business, dark, simple)
+- Layout structures (clockwise, logic.right, org-chart, fishbone, timeline, etc.)
+- Overwrite protection
+
+### Security
+- Only allows access to specified directories
+- Path normalization and validation
+- Error handling for invalid access attempts
 
 ## Installation
-
-### Via npm (recommended)
-
 ```bash
-npx @apeyroux/mcp-xmind /path/to/xmind/files
-```
-
-### From source
-
-```bash
-git clone https://github.com/apeyroux/mcp-xmind.git
-cd mcp-xmind
-npm install
-npm run build
+npm install @modelcontextprotocol/sdk adm-zip zod
+npm install --save-dev typescript @types/node
 ```
 
 ## Usage
@@ -40,39 +47,31 @@ node dist/index.js <allowed-directory> [additional-directories...]
 
 ### Available Tools
 
-1. **read_xmind**
-   - Parse and analyze XMind files
-   - Extract complete mind map structure with relationships
+#### Reading Tools
 
-2. **list_xmind_directory**
-   - Recursively scan for XMind files
-   - Filter and organize results
+1. **read_xmind** - Parse and extract complete mind map structure
+2. **list_xmind_directory** - Recursively scan for XMind files
+3. **read_multiple_xmind_files** - Process multiple files simultaneously
+4. **search_xmind_files** - Search files by name or content
+5. **extract_node** - Smart fuzzy path matching with ranked results
+6. **extract_node_by_id** - Direct node access by ID
+7. **search_nodes** - Multi-criteria search (title, notes, labels, callouts, tasks)
 
-3. **read_multiple_xmind_files**
-   - Process multiple files simultaneously
-   - Compare and analyze across files
+#### Writing Tools
 
-4. **search_xmind_files**
-   - Search files by name patterns
-   - Search within file content
-   - Recursive directory scanning
-
-5. **extract_node**
-   - Smart fuzzy path matching
-   - Ranked search results
-   - Complete subtree extraction
-
-6. **extract_node_by_id**
-   - Direct node access by ID
-   - Fast and precise retrieval
-
-7. **search_nodes**
-   - Multi-criteria content search
-   - Filter by task status (todo/done)
-   - Search in titles, notes, labels, callouts
-   - Case-sensitive/insensitive options
+8. **create_xmind** - Create XMind files from structured data
 
 ## Examples
+
+### Read a Mind Map
+```json
+{
+    "name": "read_xmind",
+    "arguments": {
+        "path": "/path/to/file.xmind"
+    }
+}
+```
 
 ### Search for Nodes
 ```json
@@ -87,34 +86,72 @@ node dist/index.js <allowed-directory> [additional-directories...]
 }
 ```
 
-### Find TODO Tasks
+### Create a Mind Map with Planned Tasks
 ```json
 {
-    "name": "search_nodes",
+    "name": "create_xmind",
     "arguments": {
-        "path": "/path/to/file.xmind",
-        "query": "",
-        "taskStatus": "todo"
+        "path": "/path/to/output.xmind",
+        "sheets": [{
+            "title": "Project Plan",
+            "theme": "business",
+            "rootTopic": {
+                "title": "Deployment",
+                "children": [
+                    {
+                        "title": "Analysis",
+                        "durationDays": 3,
+                        "progress": 0,
+                        "priority": 1
+                    },
+                    {
+                        "title": "Development",
+                        "durationDays": 5,
+                        "progress": 0,
+                        "dependencies": [{"targetTitle": "Analysis", "type": "FS"}]
+                    }
+                ]
+            }
+        }]
     }
 }
 ```
 
-### Extract Node by Fuzzy Path
+### Create Multi-Sheet with Internal Links
 ```json
 {
-    "name": "extract_node",
+    "name": "create_xmind",
     "arguments": {
-        "path": "/path/to/file.xmind",
-        "searchQuery": "Feature > API"
+        "path": "/path/to/output.xmind",
+        "sheets": [
+            {
+                "title": "Overview",
+                "rootTopic": {
+                    "title": "Project",
+                    "linkToTopic": "Details Root",
+                    "children": [{"title": "Phase 1"}, {"title": "Phase 2"}]
+                }
+            },
+            {
+                "title": "Details",
+                "rootTopic": {
+                    "title": "Details Root",
+                    "linkToTopic": "Project",
+                    "notes": {"plain": "Detailed view", "html": "<p><strong>Detailed</strong> view</p>"}
+                }
+            }
+        ]
     }
 }
 ```
 
 ## Configuration
 
-### Claude Desktop Configuration
+### Claude Desktop
 
-Add to your `claude_desktop_config.json`:
+Add the following to your `claude_desktop_config.json` (on macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`):
+
+#### Using npx (recommended)
 
 ```json
 {
@@ -123,7 +160,7 @@ Add to your `claude_desktop_config.json`:
       "command": "npx",
       "args": [
         "-y",
-        "@apeyroux/mcp-xmind",
+        "@41px/mcp-xmind",
         "/path/to/your/xmind/files"
       ]
     }
@@ -131,7 +168,7 @@ Add to your `claude_desktop_config.json`:
 }
 ```
 
-### Development Configuration
+#### Using a local build
 
 ```json
 {
@@ -147,11 +184,13 @@ Add to your `claude_desktop_config.json`:
 }
 ```
 
-## Security
+Restart Claude Desktop after editing the configuration.
 
-- Only allows access to specified directories
-- Path normalization and validation
-- Error handling for invalid access attempts
+### Claude Code (CLI)
+
+```bash
+claude mcp add xmind -- npx -y @41px/mcp-xmind /path/to/your/xmind/files
+```
 
 ## Development
 
@@ -160,23 +199,12 @@ Add to your `claude_desktop_config.json`:
 npm run build
 ```
 
-### Running Tests
+### Testing
 ```bash
 npm test
 ```
 
-### Watch Mode
-```bash
-npm run watch        # TypeScript compilation
-npm run test:watch   # Tests
-```
-
 ### MCP Inspector
-
 ```bash
 npx @modelcontextprotocol/inspector node dist/index.js /path/to/xmind/files
 ```
-
-## License
-
-MIT
