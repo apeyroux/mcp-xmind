@@ -29,7 +29,6 @@ Where `<skill-dir>` is the directory containing this SKILL.md file.
   "sheets": [
     {
       "title": "Sheet 1",
-      "theme": "default",
       "rootTopic": {
         "title": "Central Topic",
         "children": [
@@ -61,6 +60,7 @@ Each topic object supports:
 | `children` | array of topics | Child topics |
 | `notes` | string or `{plain?, html?}` | Notes. HTML supports: `<strong>`, `<u>`, `<ul>`, `<ol>`, `<li>`, `<br>`. NOT `<code>`. |
 | `href` | string | External URL link |
+| `attachment` | string | Absolute path to a file to attach (embedded in the .xmind). Mutually exclusive with `href`. |
 | `linkToTopic` | string | Title of another topic to link to (internal `xmind:#id` link, works across sheets) |
 | `labels` | string[] | Tags/labels |
 | `markers` | string[] | Marker IDs: `task-done`, `task-start`, `priority-1` to `priority-9` |
@@ -109,7 +109,6 @@ When the user mentions "planning", "schedule", "timeline", "Gantt", "project", "
 | `title` | string (required) | Sheet title |
 | `rootTopic` | topic (required) | Root topic |
 | `relationships` | array | `{sourceTitle, targetTitle, title?}` — connects topics by title |
-| `theme` | string | `"default"`, `"business"`, `"dark"`, `"simple"` |
 
 ## Important rules
 
@@ -119,3 +118,4 @@ When the user mentions "planning", "schedule", "timeline", "Gantt", "project", "
 - Topic references in relationships and dependencies are resolved by title
 - HTML notes: only `<strong>`, `<u>`, `<ul>`, `<ol>`, `<li>`, `<br>` are supported. `<code>` is NOT supported by XMind.
 - Internal links (`linkToTopic`) work across sheets
+- **Notes should be substantial and detailed** — don't just repeat the topic title. Use notes to add explanations, context, definitions, examples, key points, or reasoning. Aim for 2-5 sentences minimum per note. Use HTML notes with `<strong>`, `<ul>`/`<li>`, `<br>` for well-structured content. Most topics should have notes unless they are self-explanatory leaf nodes.

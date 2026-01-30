@@ -5,9 +5,9 @@
 // Or:   node create_xmind.mjs --path /tmp/test.xmind < data.json
 // No external dependencies — uses only Node.js built-ins.
 
-import { mkdir, writeFile } from 'fs/promises';
-import { dirname, resolve } from 'path';
-import { randomUUID } from 'crypto';
+import { mkdir, writeFile, readFile } from 'fs/promises';
+import { dirname, resolve, extname } from 'path';
+import { randomUUID, createHash } from 'crypto';
 import { deflateRawSync } from 'zlib';
 
 // ─── Minimal ZIP writer (PKZIP APPNOTE 6.3.3) ───
@@ -95,39 +95,19 @@ function generateId() {
     return randomUUID().replace(/-/g, '').substring(0, 26);
 }
 
-const THEMES = {
-    default: {},
-    business: {
-        centralTopic: { id: generateId(), properties: { "fo:font-family": "NeverMind", "fo:font-size": "30pt", "fo:font-weight": "800", "svg:fill": "#0D0D0D", "fill-pattern": "none", "line-width": "2pt", "line-color": "#0D0D0D", "line-pattern": "solid", "shape-class": "org.xmind.topicShape.roundedRect", "line-class": "org.xmind.branchConnection.curve" } },
-        mainTopic: { id: generateId(), properties: { "fo:font-family": "NeverMind", "fo:font-size": "18pt", "fo:font-weight": "500", "fill-pattern": "solid", "line-width": "2pt", "shape-class": "org.xmind.topicShape.roundedRect", "line-class": "org.xmind.branchConnection.roundedElbow" } },
-        subTopic: { id: generateId(), properties: { "fo:font-family": "NeverMind", "fo:font-size": "14pt", "fo:font-weight": "400", "fill-pattern": "none", "line-width": "2pt", "shape-class": "org.xmind.topicShape.roundedRect", "line-class": "org.xmind.branchConnection.roundedElbow" } },
-        map: { id: generateId(), properties: { "svg:fill": "#FFFFFF", "multi-line-colors": "#F22816 #F2B807 #233ED9", "color-list": "#FFFFFF #F2F2F2 #F22816 #F2B807 #233ED9 #0D0D0D", "line-tapered": "none" } },
-    },
-    dark: {
-        centralTopic: { id: generateId(), properties: { "fo:font-family": "NeverMind", "fo:font-size": "30pt", "fo:font-weight": "800", "fo:color": "#FFFFFF", "svg:fill": "#2D2D2D", "fill-pattern": "solid", "line-width": "2pt", "line-color": "#FFFFFF", "line-pattern": "solid", "shape-class": "org.xmind.topicShape.roundedRect", "line-class": "org.xmind.branchConnection.curve" } },
-        mainTopic: { id: generateId(), properties: { "fo:font-family": "NeverMind", "fo:font-size": "18pt", "fo:font-weight": "500", "fo:color": "#FFFFFF", "fill-pattern": "solid", "line-width": "2pt", "shape-class": "org.xmind.topicShape.roundedRect", "line-class": "org.xmind.branchConnection.roundedElbow" } },
-        subTopic: { id: generateId(), properties: { "fo:font-family": "NeverMind", "fo:font-size": "14pt", "fo:font-weight": "400", "fo:color": "#CCCCCC", "fill-pattern": "none", "line-width": "2pt", "shape-class": "org.xmind.topicShape.roundedRect", "line-class": "org.xmind.branchConnection.roundedElbow" } },
-        map: { id: generateId(), properties: { "svg:fill": "#1A1A1A", "multi-line-colors": "#FF6B6B #FFD93D #6BCB77", "color-list": "#1A1A1A #2D2D2D #FF6B6B #FFD93D #6BCB77 #FFFFFF", "line-tapered": "none" } },
-    },
-    simple: {
-        centralTopic: { id: generateId(), properties: { "fo:font-family": "NeverMind", "fo:font-size": "24pt", "fo:font-weight": "600", "svg:fill": "#FFFFFF", "fill-pattern": "solid", "line-width": "1pt", "line-color": "#333333", "line-pattern": "solid", "shape-class": "org.xmind.topicShape.roundedRect", "line-class": "org.xmind.branchConnection.curve" } },
-        mainTopic: { id: generateId(), properties: { "fo:font-family": "NeverMind", "fo:font-size": "16pt", "fo:font-weight": "400", "fill-pattern": "solid", "line-width": "1pt", "shape-class": "org.xmind.topicShape.roundedRect", "line-class": "org.xmind.branchConnection.roundedElbow" } },
-        subTopic: { id: generateId(), properties: { "fo:font-family": "NeverMind", "fo:font-size": "13pt", "fo:font-weight": "400", "fill-pattern": "none", "line-width": "1pt", "shape-class": "org.xmind.topicShape.roundedRect", "line-class": "org.xmind.branchConnection.roundedElbow" } },
-        map: { id: generateId(), properties: { "svg:fill": "#FFFFFF", "multi-line-colors": "#4A90D9 #50C878 #FF8C42", "color-list": "#FFFFFF #F5F5F5 #4A90D9 #50C878 #FF8C42 #333333", "line-tapered": "none" } },
-    },
-};
-
 class XMindBuilder {
     constructor() {
         this.titleToId = new Map();
         this.pendingDependencies = new Map();
         this.pendingLinks = new Map();
+        this.attachments = []; // {sourcePath, resourcePath}
     }
 
     build(sheets) {
         this.titleToId.clear();
         this.pendingDependencies.clear();
         this.pendingLinks.clear();
+        this.attachments = [];
 
         const builtSheets = [];
         for (const sheet of sheets) {
@@ -141,7 +121,7 @@ class XMindBuilder {
         }
 
         const contentJson = builtSheets.map(({ rootTopic, sheet }) => {
-            const sheetTheme = sheet.theme ? THEMES[sheet.theme] || {} : {};
+            const sheetTheme = {};
             const hasPlanned = this.hasPlannedTasks(sheet.rootTopic);
             const sheetObj = {
                 id: generateId(),
@@ -177,14 +157,49 @@ class XMindBuilder {
         });
 
         return {
+            contentJson,
+            attachments: this.attachments,
+        };
+    }
+
+    async finalize(contentJson, attachments) {
+        const fileEntries = { "content.json": {}, "metadata.json": {} };
+        const resourceFiles = [];
+
+        for (const att of attachments) {
+            const data = await readFile(resolve(att.sourcePath));
+            const hash = createHash('sha256').update(data).digest('hex');
+            const ext = extname(att.sourcePath);
+            const resourcePath = `resources/${hash}${ext}`;
+            fileEntries[resourcePath] = {};
+            resourceFiles.push({ name: resourcePath, data });
+            // Set href on the topic
+            this.setHrefById(contentJson, att.topicId, `xap:${resourcePath}`);
+        }
+
+        return {
             content: JSON.stringify(contentJson),
             metadata: JSON.stringify({
                 dataStructureVersion: "3",
                 creator: { name: "xmind-skill", version: "1.0.0" },
                 layoutEngineVersion: "5",
             }),
-            manifest: JSON.stringify({ "file-entries": { "content.json": {}, "metadata.json": {}, "Thumbnails/thumbnail.png": {} } }),
+            manifest: JSON.stringify({ "file-entries": fileEntries }),
+            resourceFiles,
         };
+    }
+
+    setHrefById(sheets, topicId, href) {
+        for (const sheet of sheets) {
+            if (this._setHref(sheet.rootTopic, topicId, href)) return;
+        }
+    }
+
+    _setHref(topic, topicId, href) {
+        if (topic.id === topicId) { topic.href = href; return true; }
+        for (const child of topic.children?.attached || []) if (this._setHref(child, topicId, href)) return true;
+        for (const child of topic.children?.callout || []) if (this._setHref(child, topicId, href)) return true;
+        return false;
     }
 
     resolveLinks(topic) {
@@ -234,7 +249,11 @@ class XMindBuilder {
                 if (input.notes.html) topic.notes.realHTML = { content: input.notes.html };
             }
         }
-        if (input.href) topic.href = input.href;
+        if (input.attachment) {
+            this.attachments.push({ sourcePath: input.attachment, topicId: id });
+        } else if (input.href) {
+            topic.href = input.href;
+        }
         if (input.linkToTopic) this.pendingLinks.set(id, input.linkToTopic);
         if (input.labels) topic.labels = input.labels;
         if (input.markers?.length > 0) topic.markers = input.markers.map(m => ({ markerId: m }));
@@ -305,7 +324,8 @@ async function main() {
     }
 
     const builder = new XMindBuilder();
-    const { content, metadata, manifest } = builder.build(input.sheets);
+    const { contentJson, attachments } = builder.build(input.sheets);
+    const { content, metadata, manifest, resourceFiles } = await builder.finalize(contentJson, attachments);
 
     const resolvedPath = resolve(outputPath);
     await mkdir(dirname(resolvedPath), { recursive: true });
@@ -314,6 +334,7 @@ async function main() {
         { name: 'content.json', data: Buffer.from(content, 'utf-8') },
         { name: 'metadata.json', data: Buffer.from(metadata, 'utf-8') },
         { name: 'manifest.json', data: Buffer.from(manifest, 'utf-8') },
+        ...resourceFiles,
     ]);
     await writeFile(resolvedPath, zipBuffer);
 
