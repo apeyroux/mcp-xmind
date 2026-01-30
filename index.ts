@@ -10,12 +10,8 @@ import AdmZip from 'adm-zip';
 
 // Command line argument parsing
 const args = process.argv.slice(2);
-if (args.length === 0) {
-    console.error("Usage: mcp-server-xmind <allowed-directory> [additional-directories...]");
-    process.exit(1);
-}
 
-// Store allowed directories in normalized form
+// Store allowed directories in normalized form (empty = all paths allowed)
 const allowedDirectories = args.map(dir =>
     path.normalize(path.resolve(dir)).toLowerCase()
 );
@@ -38,6 +34,7 @@ async function validateDirectories(): Promise<void> {
 
 // Path validation helper
 function isPathAllowed(filePath: string): boolean {
+    if (allowedDirectories.length === 0) return true;
     const normalizedPath = path.normalize(path.resolve(filePath)).toLowerCase();
     return allowedDirectories.some(dir => normalizedPath.startsWith(dir));
 }
@@ -438,12 +435,14 @@ async function listXMindFiles(directory?: string): Promise<string[]> {
     const files: string[] = [];
     const dirsToScan = directory
         ? [path.normalize(path.resolve(directory))]
-        : allowedDirectories;
+        : allowedDirectories.length > 0 ? allowedDirectories : [path.normalize(path.resolve('.'))];
 
     for (const dir of dirsToScan) {
-        const normalizedDir = dir.toLowerCase();
-        if (!allowedDirectories.some(allowed => normalizedDir.startsWith(allowed))) {
-            continue;
+        if (allowedDirectories.length > 0) {
+            const normalizedDir = dir.toLowerCase();
+            if (!allowedDirectories.some(allowed => normalizedDir.startsWith(allowed))) {
+                continue;
+            }
         }
 
         async function scanDirectory(currentDir: string): Promise<void> {
