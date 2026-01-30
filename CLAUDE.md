@@ -23,3 +23,10 @@
 - Résolution par titre (relationships, dependencies, linkToTopic) : stocker title→id dans un Map, résoudre après construction
 - TypeScript : utiliser `NonNullable<T>` pour accéder aux éléments d'arrays optionnels dans les interfaces
 - Tests : `testDirPath` pour les fichiers créés par create_xmind (pas `tempDir`)
+
+## Skill
+- `skills/xmind/` : skill standalone pour Claude Desktop (création uniquement, pas de lecture)
+- Script : `skills/xmind/scripts/create_xmind.mjs` — zéro dépendance npm (ZIP inline avec `zlib.deflateRawSync`)
+- Build : `cd skills/xmind && zip -r xmind-skill.zip SKILL.md scripts/`
+- Test : `echo '{"path":"/tmp/test.xmind","sheets":[{"title":"T","rootTopic":{"title":"R"}}]}' | node skills/xmind/scripts/create_xmind.mjs`
+- Claude Code : `ln -s /path/to/mcp-xmind/skills/xmind ~/.claude/skills/xmind` (ou `.claude/skills/` par projet)

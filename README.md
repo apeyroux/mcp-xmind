@@ -27,7 +27,7 @@ A Model Context Protocol server for reading, creating and querying XMind mind ma
 - Overwrite protection
 
 ### Security
-- Only allows access to specified directories
+- Optionally restricts access to specified directories (if none provided, any path is allowed)
 - Path normalization and validation
 - Error handling for invalid access attempts
 
@@ -186,10 +186,36 @@ Add the following to your `claude_desktop_config.json` (on macOS: `~/Library/App
 
 Restart Claude Desktop after editing the configuration.
 
-### Claude Code (CLI)
+### Skill (Claude Desktop)
+
+A standalone skill is available for creating XMind files without the MCP server. Unlike the MCP server which provides both reading and writing tools, the skill only supports creation.
+
+**Build the skill ZIP:**
 
 ```bash
+cd skills/xmind && zip -r xmind-skill.zip SKILL.md scripts/
+```
+
+**Install:** Open Claude Desktop > Settings > Capabilities > Skills > Upload `xmind-skill.zip`.
+
+The skill script has zero npm dependencies (uses Node.js built-ins only), so it works in the Claude Desktop sandbox.
+
+**Capabilities:** nested topics, plain & HTML notes (`<strong>`, `<u>`, lists), labels, markers, callouts, boundaries, summaries, relationships between topics, internal links across sheets, layout structures (org-chart, fishbone, timeline…), themes (business, dark, simple), simple tasks (todo/done), and planned tasks with Gantt support (dates, duration, progress, priority, dependencies).
+
+### Claude Code (CLI)
+
+**MCP server:**
+```bash
 claude mcp add xmind -- npx -y @41px/mcp-xmind /path/to/your/xmind/files
+```
+
+**Skill (création uniquement):** copier ou lier le dossier skill dans `.claude/skills/` du projet ou `~/.claude/skills/` pour tous les projets :
+```bash
+# Projet uniquement
+ln -s /path/to/mcp-xmind/skills/xmind .claude/skills/xmind
+
+# Tous les projets
+ln -s /path/to/mcp-xmind/skills/xmind ~/.claude/skills/xmind
 ```
 
 ## Development
