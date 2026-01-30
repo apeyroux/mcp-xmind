@@ -1,6 +1,6 @@
 {
   "name": "@41px/mcp-xmind",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "MCP server for XMind",
   "mcpName": "io.github.apeyroux/mcp-xmind",
   "repository": {
