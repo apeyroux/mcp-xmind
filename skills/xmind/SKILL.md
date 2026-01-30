@@ -68,6 +68,18 @@ Each topic object supports:
 | `boundaries` | `{range, title?}[]` | Visual grouping of children. Range: `"(start,end)"` |
 | `summaryTopics` | `{range, title}[]` | Summary topics spanning children ranges |
 | `structureClass` | string | Layout (see below) |
+| `shape` | string | Topic shape (see shapes below) |
+| `position` | `{x, y}` | Absolute position (only for detached topics in free-positioning sheets) |
+
+### Topic shapes
+
+- `org.xmind.topicShape.roundedRect` — rounded rectangle (default)
+- `org.xmind.topicShape.diamond` — diamond (use for conditions/decisions)
+- `org.xmind.topicShape.ellipserect` — ellipse (use for start/end)
+- `org.xmind.topicShape.rect` — rectangle
+- `org.xmind.topicShape.underline` — underline only
+- `org.xmind.topicShape.circle` — circle
+- `org.xmind.topicShape.parallelogram` — parallelogram (use for I/O)
 
 ### Layout structures
 
@@ -108,7 +120,45 @@ When the user mentions "planning", "schedule", "timeline", "Gantt", "project", "
 |-------|------|-------------|
 | `title` | string (required) | Sheet title |
 | `rootTopic` | topic (required) | Root topic |
-| `relationships` | array | `{sourceTitle, targetTitle, title?}` — connects topics by title |
+| `relationships` | array | `{sourceTitle, targetTitle, title?, shape?}` — connects topics by title. `shape`: `"org.xmind.relationshipShape.curved"` (default) or `"org.xmind.relationshipShape.straight"` |
+| `detachedTopics` | array of topics | Free-floating topics (require `freePositioning: true` and `position` on each topic) |
+| `freePositioning` | boolean | Enable free topic positioning (for logic/flow diagrams) |
+
+## Logic / Flow diagrams
+
+For flowcharts, logic diagrams, or algorithmic diagrams, use **free positioning** with **detached topics** and **straight relationships**:
+
+```json
+{
+  "path": "/tmp/flowchart.xmind",
+  "sheets": [{
+    "title": "Algorithm",
+    "freePositioning": true,
+    "rootTopic": {
+      "title": "START",
+      "shape": "org.xmind.topicShape.ellipserect",
+      "structureClass": "org.xmind.ui.map.clockwise"
+    },
+    "detachedTopics": [
+      {"title": "IS X > 0?", "position": {"x": 0, "y": 130}, "shape": "org.xmind.topicShape.diamond"},
+      {"title": "PRINT YES", "position": {"x": 200, "y": 130}},
+      {"title": "PRINT NO", "position": {"x": -200, "y": 130}},
+      {"title": "END", "position": {"x": 0, "y": 260}, "shape": "org.xmind.topicShape.ellipserect"}
+    ],
+    "relationships": [
+      {"sourceTitle": "START", "targetTitle": "IS X > 0?", "shape": "org.xmind.relationshipShape.straight"},
+      {"sourceTitle": "IS X > 0?", "targetTitle": "PRINT YES", "title": "YES", "shape": "org.xmind.relationshipShape.straight"},
+      {"sourceTitle": "IS X > 0?", "targetTitle": "PRINT NO", "title": "NO", "shape": "org.xmind.relationshipShape.straight"},
+      {"sourceTitle": "PRINT YES", "targetTitle": "END", "shape": "org.xmind.relationshipShape.straight"},
+      {"sourceTitle": "PRINT NO", "targetTitle": "END", "shape": "org.xmind.relationshipShape.straight"}
+    ]
+  }]
+}
+```
+
+**Conventions:** Use **ellipse** for start/end, **diamond** for conditions, **rectangle** (default) for actions, **parallelogram** for I/O. Use `"org.xmind.relationshipShape.straight"` for all connectors. Position topics on a grid (y increments of ~130px, x offsets of ~200px for branches).
+
+When the user mentions "flowchart", "algorithm", "logic diagram", "organigramme de programmation", "diagramme logique", use this pattern.
 
 ## Working with large files
 

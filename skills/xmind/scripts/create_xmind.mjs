@@ -112,25 +112,36 @@ class XMindBuilder {
         const builtSheets = [];
         for (const sheet of sheets) {
             const rootTopic = this.buildTopic(sheet.rootTopic);
+            const detached = sheet.detachedTopics?.map(t => this.buildTopic(t, { detached: true }));
             this.resolveDependencies(rootTopic);
-            builtSheets.push({ rootTopic, sheet });
+            builtSheets.push({ rootTopic, detached, sheet });
         }
 
-        for (const { rootTopic } of builtSheets) {
+        for (const { rootTopic, detached } of builtSheets) {
             this.resolveLinks(rootTopic);
+            if (detached) detached.forEach(t => this.resolveLinks(t));
         }
 
-        const contentJson = builtSheets.map(({ rootTopic, sheet }) => {
+        const contentJson = builtSheets.map(({ rootTopic, detached, sheet }) => {
             const sheetTheme = {};
             const hasPlanned = this.hasPlannedTasks(sheet.rootTopic);
+            if (detached?.length > 0) {
+                if (!rootTopic.children) rootTopic.children = {};
+                rootTopic.children.detached = detached;
+            }
+            const sheetId = generateId();
             const sheetObj = {
-                id: generateId(),
+                id: sheetId,
                 class: "sheet",
                 title: sheet.title,
                 rootTopic,
                 topicOverlapping: "overlap",
                 theme: sheetTheme,
             };
+            if (sheet.freePositioning) {
+                sheetObj.topicPositioning = "free";
+                sheetObj.floatingTopicFlexible = true;
+            }
             if (hasPlanned) {
                 sheetObj.extensions = [{
                     provider: "org.xmind.ui.working-day-settings",
@@ -150,6 +161,10 @@ class XMindBuilder {
                     if (!end2Id) throw new Error(`Relationship target not found: "${rel.targetTitle}"`);
                     const r = { id: generateId(), end1Id, end2Id };
                     if (rel.title) r.title = rel.title;
+                    if (rel.shape) {
+                        r.style = { id: generateId(), properties: { "shape-class": rel.shape } };
+                    }
+                    if (rel.controlPoints) r.controlPoints = rel.controlPoints;
                     return r;
                 });
             }
@@ -233,12 +248,16 @@ class XMindBuilder {
         return (input.children || []).some(c => this.hasPlannedTasks(c));
     }
 
-    buildTopic(input) {
+    buildTopic(input, { detached = false } = {}) {
         const id = generateId();
         this.titleToId.set(input.title, id);
         const topic = { id, class: "topic", title: input.title };
 
         if (input.structureClass) topic.structureClass = input.structureClass;
+        if (input.position) topic.position = input.position;
+        if (input.shape) {
+            topic.style = { id: generateId(), properties: { "shape-class": input.shape } };
+        }
 
         if (input.notes) {
             if (typeof input.notes === 'string') {
