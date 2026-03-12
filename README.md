@@ -1,5 +1,7 @@
 # MCP XMind Server
 
+[![MCPAmpel](https://img.shields.io/endpoint?url=https://mcpampel.com/badge/apeyroux/mcp-xmind.json)](https://mcpampel.com/repo/apeyroux/mcp-xmind)
+
 A Model Context Protocol server for reading, creating and querying XMind mind maps. This tool provides powerful capabilities for searching, extracting, analyzing and generating XMind files.
 
 ## Features
