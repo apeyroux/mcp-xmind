@@ -6,9 +6,10 @@
 // No external dependencies — uses only Node.js built-ins.
 
 import { mkdir, writeFile, readFile } from 'fs/promises';
+import { existsSync } from 'fs';
 import { dirname, resolve, extname } from 'path';
 import { randomUUID, createHash } from 'crypto';
-import { deflateRawSync } from 'zlib';
+import { deflateRawSync, inflateRawSync } from 'zlib';
 
 // ─── Minimal ZIP writer (PKZIP APPNOTE 6.3.3) ───
 
@@ -89,6 +90,93 @@ function buildZip(files) {
     return Buffer.concat([...entries, centralDir, eocd]);
 }
 
+// ─── Minimal ZIP reader (ported from read_xmind.mjs) — used to preserve theme/style/resources
+// when overwriting a file that already exists, so re-running create_xmind.mjs on an existing
+// .xmind never silently resets its visual theme, layout extensions, or embedded thumbnail. ───
+
+function readZip(buf) {
+    let eocdOffset = -1;
+    for (let i = buf.length - 22; i >= 0; i--) {
+        if (buf.readUInt32LE(i) === 0x06054b50) {
+            eocdOffset = i;
+            break;
+        }
+    }
+    if (eocdOffset === -1) throw new Error('Invalid ZIP: EOCD not found');
+
+    const cdEntries = buf.readUInt16LE(eocdOffset + 10);
+    const cdOffset = buf.readUInt32LE(eocdOffset + 16);
+
+    const files = new Map();
+    let pos = cdOffset;
+    for (let i = 0; i < cdEntries; i++) {
+        if (buf.readUInt32LE(pos) !== 0x02014b50) throw new Error('Invalid ZIP: bad CD entry');
+        const compression = buf.readUInt16LE(pos + 10);
+        const compressedSize = buf.readUInt32LE(pos + 20);
+        const nameLen = buf.readUInt16LE(pos + 28);
+        const extraLen = buf.readUInt16LE(pos + 30);
+        const commentLen = buf.readUInt16LE(pos + 32);
+        const localHeaderOffset = buf.readUInt32LE(pos + 42);
+        const name = buf.toString('utf-8', pos + 46, pos + 46 + nameLen);
+
+        files.set(name, { compression, compressedSize, localHeaderOffset });
+        pos += 46 + nameLen + extraLen + commentLen;
+    }
+
+    return {
+        extract(name) {
+            const entry = files.get(name);
+            if (!entry) return null;
+            const lhOffset = entry.localHeaderOffset;
+            if (buf.readUInt32LE(lhOffset) !== 0x04034b50) throw new Error('Invalid ZIP: bad local header');
+            const lhNameLen = buf.readUInt16LE(lhOffset + 26);
+            const lhExtraLen = buf.readUInt16LE(lhOffset + 28);
+            const dataOffset = lhOffset + 30 + lhNameLen + lhExtraLen;
+            const rawData = buf.subarray(dataOffset, dataOffset + entry.compressedSize);
+            if (entry.compression === 0) return rawData;
+            if (entry.compression === 8) return inflateRawSync(rawData);
+            throw new Error(`Unsupported compression method: ${entry.compression}`);
+        },
+        names() { return [...files.keys()]; },
+    };
+}
+
+// Reads an existing .xmind file (if any) at `path` so its per-sheet theme/extensions and
+// embedded resources (e.g. Thumbnails/thumbnail.png) can be carried into the regenerated file.
+// Returns null if there's nothing to preserve (file doesn't exist, isn't zen-format, or fails to parse) —
+// callers must treat that as "nothing to merge", not an error.
+async function loadExistingXMind(path) {
+    if (!existsSync(path)) return null;
+    try {
+        const buf = await readFile(path);
+        const zip = readZip(buf);
+        const names = zip.names();
+        if (!names.includes('content.json')) return null;
+
+        const contentJson = JSON.parse(zip.extract('content.json').toString('utf-8'));
+        const metadataRaw = names.includes('metadata.json')
+            ? zip.extract('metadata.json').toString('utf-8')
+            : null;
+
+        const sheetsByTitle = new Map();
+        for (const sheet of contentJson) {
+            if (sheet.title) sheetsByTitle.set(sheet.title, sheet);
+        }
+
+        const resourceEntries = [];
+        for (const name of names) {
+            if (name === 'content.json' || name === 'metadata.json' || name === 'manifest.json') continue;
+            if (name.endsWith('/')) continue; // directory marker entry, nothing to carry forward
+            resourceEntries.push({ name, data: zip.extract(name) });
+        }
+
+        return { sheetsByTitle, metadataRaw, resourceEntries };
+    } catch (err) {
+        console.error(`Warning: could not read existing file "${path}" to preserve its theme/style (${err.message}). Proceeding without merge.`);
+        return null;
+    }
+}
+
 // ─── XMind builder ───
 
 function generateId() {
@@ -103,7 +191,7 @@ class XMindBuilder {
         this.attachments = []; // {sourcePath, resourcePath}
     }
 
-    build(sheets) {
+    build(sheets, existingSheetsByTitle = null) {
         this.titleToId.clear();
         this.pendingDependencies.clear();
         this.pendingLinks.clear();
@@ -123,21 +211,29 @@ class XMindBuilder {
         }
 
         const contentJson = builtSheets.map(({ rootTopic, detached, sheet }) => {
-            const sheetTheme = {};
+            const existingSheet = existingSheetsByTitle?.get(sheet.title);
+            // Preserve the previous sheet's visual theme and layout extensions when a sheet with
+            // the same title already existed — without this, every regeneration resets styling to
+            // XMind's bare default (empty theme, no clockwise/logic layout, no thumbnail).
+            const sheetTheme = existingSheet?.theme ? existingSheet.theme : {};
             const hasPlanned = this.hasPlannedTasks(sheet.rootTopic);
             if (detached?.length > 0) {
                 if (!rootTopic.children) rootTopic.children = {};
                 rootTopic.children.detached = detached;
             }
-            const sheetId = generateId();
+            const sheetId = existingSheet?.id || generateId();
             const sheetObj = {
                 id: sheetId,
                 class: "sheet",
                 title: sheet.title,
                 rootTopic,
-                topicOverlapping: "overlap",
+                topicOverlapping: existingSheet?.topicOverlapping || "overlap",
                 theme: sheetTheme,
             };
+            if (existingSheet?.arrangeableLayerOrder) {
+                sheetObj.arrangeableLayerOrder = [rootTopic.id];
+            }
+            if (existingSheet?.zones) sheetObj.zones = existingSheet.zones;
             if (sheet.freePositioning) {
                 sheetObj.topicPositioning = "free";
                 sheetObj.floatingTopicFlexible = true;
@@ -152,6 +248,10 @@ class XMindBuilder {
                         rules: [],
                     },
                 }];
+            } else if (existingSheet?.extensions) {
+                // Preserve non-task extensions from the old sheet (e.g. layout/structure style)
+                // as long as this build isn't introducing its own planned-task extension.
+                sheetObj.extensions = existingSheet.extensions;
             }
             if (sheet.relationships?.length > 0) {
                 sheetObj.relationships = sheet.relationships.map(rel => {
@@ -177,9 +277,17 @@ class XMindBuilder {
         };
     }
 
-    async finalize(contentJson, attachments) {
+    async finalize(contentJson, attachments, existingResourceEntries = [], existingMetadataRaw = null) {
         const fileEntries = { "content.json": {}, "metadata.json": {} };
         const resourceFiles = [];
+
+        // Carry forward resources embedded in the previous file (e.g. Thumbnails/thumbnail.png)
+        // that this build doesn't already regenerate — otherwise XMind falls back to a blank
+        // thumbnail/theme-less render for files that previously had one.
+        for (const res of existingResourceEntries) {
+            fileEntries[res.name] = {};
+            resourceFiles.push({ name: res.name, data: res.data });
+        }
 
         for (const att of attachments) {
             const data = await readFile(resolve(att.sourcePath));
@@ -194,7 +302,7 @@ class XMindBuilder {
 
         return {
             content: JSON.stringify(contentJson),
-            metadata: JSON.stringify({
+            metadata: existingMetadataRaw || JSON.stringify({
                 dataStructureVersion: "3",
                 creator: { name: "xmind-skill", version: "1.0.0" },
                 layoutEngineVersion: "5",
@@ -629,10 +737,20 @@ async function main() {
     }
 
     const builder = new XMindBuilder();
-    const { contentJson, attachments } = builder.build(input.sheets);
 
     const resolvedPath = resolve(outputPath);
     await mkdir(dirname(resolvedPath), { recursive: true });
+
+    // If a zen-format .xmind already exists at this path, preserve its per-sheet theme/layout
+    // extensions and embedded resources (thumbnail, attachments) when regenerating — see
+    // loadExistingXMind(). Legacy-format rebuilds don't carry theme state the same way, so this
+    // only applies when producing zen output.
+    const existing = resolvedFormat === 'zen' ? await loadExistingXMind(resolvedPath) : null;
+    if (existing) {
+        console.error(`Note: preserving theme/layout/resources from existing file at ${resolvedPath}`);
+    }
+
+    const { contentJson, attachments } = builder.build(input.sheets, existing?.sheetsByTitle);
 
     if (resolvedFormat === 'legacy') {
         // Legacy XML format (XMind 3–8 compatible)
@@ -653,7 +771,9 @@ async function main() {
         console.log(`Created (XMind 8 / legacy XML format): ${resolvedPath}`);
     } else {
         // Modern JSON format (XMind Zen / 2020+)
-        const { content, metadata, manifest, resourceFiles } = await builder.finalize(contentJson, attachments);
+        const { content, metadata, manifest, resourceFiles } = await builder.finalize(
+            contentJson, attachments, existing?.resourceEntries, existing?.metadataRaw,
+        );
         const zipBuffer = buildZip([
             { name: 'content.json', data: Buffer.from(content, 'utf-8') },
             { name: 'metadata.json', data: Buffer.from(metadata, 'utf-8') },

@@ -66,6 +66,12 @@ node <skill-dir>/scripts/create_xmind.mjs < /tmp/xmind_input.json
 
 Where `<skill-dir>` is the directory containing this SKILL.md file.
 
+### Updating an existing file (theme/style preservation)
+
+If `path` points to a file that already exists (e.g. you're adding/editing a branch in a mind map someone already styled), `create_xmind.mjs` automatically preserves that file's visual theme, layout extensions, and embedded resources (like `Thumbnails/thumbnail.png`) — matched per-sheet by `title`. You do NOT need to read the old theme, back up the file, or manually merge anything yourself; just include the unchanged sheets/branches in your input JSON (with the same sheet `title`s) alongside the new/edited content, and the script carries the styling forward.
+
+This only applies to the modern `zen` format. If you rewrite a sheet under a **different** title than it had before, it's treated as a brand-new sheet and gets a fresh default theme — keep sheet titles stable across updates when you want styling preserved.
+
 ## Format compatibility
 
 Both scripts handle two XMind format families:
@@ -337,6 +343,7 @@ echo '{"action": "search_nodes", "path": "/path/to/file.xmind", "query": "auth",
 ## Important rules
 
 - **NEVER use `unzip`, `zipinfo`, or any external ZIP tool on .xmind files.** Both scripts handle ZIP internally — `create_xmind.mjs` writes ZIP with built-in code, `read_xmind.mjs` reads ZIP with built-in code. Just pipe JSON to the script and it handles everything. There is no need to extract, decompress, or inspect the .xmind file yourself.
+- **When editing/adding to an existing .xmind file, always include every sheet with its original `title`** — even sheets you aren't changing — so `create_xmind.mjs` can match them up and preserve their theme/styling/thumbnail (see "Updating an existing file" above). Only omit or retitle a sheet when you intentionally want it reset to default styling.
 - The output path MUST end with `.xmind`
 - Always write the file where the user requests (e.g. ~/Downloads, ~/Desktop)
 - IDs are generated automatically
