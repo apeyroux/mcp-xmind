@@ -153,14 +153,21 @@ async function loadExistingXMind(path) {
         const names = zip.names();
         if (!names.includes('content.json')) return null;
 
-        const contentJson = JSON.parse(zip.extract('content.json').toString('utf-8'));
+        const parsedContent = JSON.parse(zip.extract('content.json').toString('utf-8'));
+        // Accept both array format and {sheets:[...]} object wrapper (read_xmind.mjs does the same).
+        const contentJson = Array.isArray(parsedContent) ? parsedContent
+            : Array.isArray(parsedContent?.sheets) ? parsedContent.sheets : [];
         const metadataRaw = names.includes('metadata.json')
             ? zip.extract('metadata.json').toString('utf-8')
             : null;
 
+        // Sheets are matched by title; keep a queue per title so a workbook with duplicate
+        // sheet titles doesn't collapse them onto a single reused id.
         const sheetsByTitle = new Map();
         for (const sheet of contentJson) {
-            if (sheet.title) sheetsByTitle.set(sheet.title, sheet);
+            if (!sheet.title) continue;
+            if (!sheetsByTitle.has(sheet.title)) sheetsByTitle.set(sheet.title, []);
+            sheetsByTitle.get(sheet.title).push(sheet);
         }
 
         const resourceEntries = [];
@@ -211,7 +218,10 @@ class XMindBuilder {
         }
 
         const contentJson = builtSheets.map(({ rootTopic, detached, sheet }) => {
-            const existingSheet = existingSheetsByTitle?.get(sheet.title);
+            // Sheets with duplicate titles are matched in order (first existing sheet with this
+            // title pairs with the first rebuilt sheet with this title, etc.) rather than all
+            // reusing the same existing sheet.
+            const existingSheet = existingSheetsByTitle?.get(sheet.title)?.shift();
             // Preserve the previous sheet's visual theme and layout extensions when a sheet with
             // the same title already existed — without this, every regeneration resets styling to
             // XMind's bare default (empty theme, no clockwise/logic layout, no thumbnail).
@@ -238,8 +248,13 @@ class XMindBuilder {
                 sheetObj.topicPositioning = "free";
                 sheetObj.floatingTopicFlexible = true;
             }
+            // Preserve non-task extensions from the old sheet (e.g. layout/structure style),
+            // then layer the planned-task extension on top if this build introduces one —
+            // otherwise regenerating a sheet with tasks would drop its prior layout extensions.
+            const preservedExtensions = (existingSheet?.extensions || [])
+                .filter(e => e.provider !== 'org.xmind.ui.working-day-settings');
             if (hasPlanned) {
-                sheetObj.extensions = [{
+                preservedExtensions.push({
                     provider: "org.xmind.ui.working-day-settings",
                     content: {
                         id: "YmFzaWMtY2FsZW5kYXI=",
@@ -247,12 +262,9 @@ class XMindBuilder {
                         defaultWorkingDays: [1, 2, 3, 4, 5],
                         rules: [],
                     },
-                }];
-            } else if (existingSheet?.extensions) {
-                // Preserve non-task extensions from the old sheet (e.g. layout/structure style)
-                // as long as this build isn't introducing its own planned-task extension.
-                sheetObj.extensions = existingSheet.extensions;
+                });
             }
+            if (preservedExtensions.length > 0) sheetObj.extensions = preservedExtensions;
             if (sheet.relationships?.length > 0) {
                 sheetObj.relationships = sheet.relationships.map(rel => {
                     const end1Id = this.titleToId.get(rel.sourceTitle);
@@ -279,15 +291,7 @@ class XMindBuilder {
 
     async finalize(contentJson, attachments, existingResourceEntries = [], existingMetadataRaw = null) {
         const fileEntries = { "content.json": {}, "metadata.json": {} };
-        const resourceFiles = [];
-
-        // Carry forward resources embedded in the previous file (e.g. Thumbnails/thumbnail.png)
-        // that this build doesn't already regenerate — otherwise XMind falls back to a blank
-        // thumbnail/theme-less render for files that previously had one.
-        for (const res of existingResourceEntries) {
-            fileEntries[res.name] = {};
-            resourceFiles.push({ name: res.name, data: res.data });
-        }
+        const resourceFilesByName = new Map();
 
         for (const att of attachments) {
             const data = await readFile(resolve(att.sourcePath));
@@ -295,10 +299,22 @@ class XMindBuilder {
             const ext = extname(att.sourcePath);
             const resourcePath = `resources/${hash}${ext}`;
             fileEntries[resourcePath] = {};
-            resourceFiles.push({ name: resourcePath, data });
+            resourceFilesByName.set(resourcePath, data);
             // Set href on the topic
             this.setHrefById(contentJson, att.topicId, `xap:${resourcePath}`);
         }
+
+        // Carry forward resources embedded in the previous file (e.g. Thumbnails/thumbnail.png)
+        // that this build doesn't already regenerate — otherwise XMind falls back to a blank
+        // thumbnail/theme-less render for files that previously had one. Skip any name already
+        // written by a freshly-attached resource above so regenerated attachments always win.
+        for (const res of existingResourceEntries) {
+            if (resourceFilesByName.has(res.name)) continue;
+            fileEntries[res.name] = {};
+            resourceFilesByName.set(res.name, res.data);
+        }
+
+        const resourceFiles = [...resourceFilesByName].map(([name, data]) => ({ name, data }));
 
         return {
             content: JSON.stringify(contentJson),
