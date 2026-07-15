@@ -240,10 +240,10 @@ class XMindBuilder {
                 topicOverlapping: existingSheet?.topicOverlapping || "overlap",
                 theme: sheetTheme,
             };
-            if (existingSheet?.arrangeableLayerOrder) {
-                sheetObj.arrangeableLayerOrder = [rootTopic.id];
-            }
-            if (existingSheet?.zones) sheetObj.zones = existingSheet.zones;
+            // Note: `zones` and `arrangeableLayerOrder` are intentionally NOT carried forward —
+            // both reference topic/zone ids, and buildTopic() always mints fresh ids, so copying
+            // them verbatim would leave dangling references into a workbook that no longer has
+            // those ids.
             if (sheet.freePositioning) {
                 sheetObj.topicPositioning = "free";
                 sheetObj.floatingTopicFlexible = true;
